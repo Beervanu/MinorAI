@@ -53,7 +53,7 @@ class BuilderBot(Bot):
 	def __init__(self, core_pos, move_dir):
 		self.core_pos = core_pos
 		self.move_dir = move_dir
-		self.ores = {}
+		self.ores = []
 		self.target = None
 		self.conveying = False
 		self.returning = False
