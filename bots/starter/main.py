@@ -78,7 +78,24 @@ class Bitboard:
 		index = pos.y * self.width + pos.x
 		return (self.map >> index) &1
 
-
+class Obstruction:
+	def __init__(self, pos):
+		self.bottom_right =pos
+		self.top_right = pos
+		self.top_left = pos
+		self.bottom_left = pos
+		
+class ObstructionPointer:
+	def __init__(self, obj:Obstruction):
+		self._obj = obj
+	
+	def __getattr__(self, name):
+		return self._obj.__getattribute__(name)
+	
+	def merge(self, other):
+		self._obj.bottom_right = 
+		self._obj = other._obj
+		
 
 class BuilderBot(Bot):
 	def __init__(self, ct: Controller, core_pos: Position, move_dir: Direction):
@@ -92,6 +109,7 @@ class BuilderBot(Bot):
 		self.ore_ti_map = Bitboard(self.map_width, self.map_height)
 		self.ores = []
 		self.ore_ax_map = Bitboard(self.map_width, self.map_height)
+		
 		self.scan_surroundings(ct)
 
 		self.long_target = core_pos
@@ -105,11 +123,8 @@ class BuilderBot(Bot):
 			case Direction.EAST:
 				self.long_target = Position(self.map_width, core_pos.y)
 		path_dir = pos_normalize(pos_from(core_pos, self.long_target), 20**0.5)
-		self.target = pos_add(core_pos, path_dir)
-		for i in range(4):
-			self.target = self.target.add(move_dir)
-		#self.heuristic_map = [[0 for i in range(self.map_width)] for i in range(self.map_height)]
-		#self.path = []
+		self.targets = [ct.get_position().add(move_dir)]
+		self.path = []
 
 	def turn_start(self, ct: Controller):
 		move_dir = self.fastest_path_dir(ct)
@@ -123,12 +138,17 @@ class BuilderBot(Bot):
 		# change to only update edges based on which direction we last moved
 		self.scan_surroundings(ct)
 
+	def check_obstructions_to_target(self, path):
+		pass
+
 	def fastest_path_dir(self, ct: Controller):
-		path_dir = pos_normalize(pos_from(ct.get_position(), self.long_target), 20**0.5)
-		self.target = pos_add(ct.get_position(), path_dir)
-		path = [ct.get_position()]
-		check_dir = path[-1].direction_to(self.target)
-		check_pos = path[-1].add(check_dir)
+		if self.targets:
+			path_dir = pos_normalize(pos_from(self.targets[0], self.long_target), 20**0.5)
+		else:
+			path_dir = pos_normalize(pos_from(ct.get_position(), self.long_target), 20**0.5)
+		short_target = pos_add(ct.get_position(), path_dir)
+
+		for i in range(min(path_dir.x, path_dir.y))
 		while not pos_eq(check_pos, self.target):
 			if not self.passable_map.get(check_pos):
 				return check_dir
@@ -141,6 +161,8 @@ class BuilderBot(Bot):
 	
 	def scan_surroundings(self, ct):
 		for tile_pos in ct.get_nearby_tiles():
+			if self.seen_map.get(tile_pos):
+				continue
 			self.seen_map.set(tile_pos,True)
 			match ct.get_tile_env(tile_pos):
 				case Environment.WALL:
