@@ -39,6 +39,21 @@ class Player:
 		self.bot.turn_start(ct)
 		self.bot.turn_end(ct)
 
+def dir_is_cardinal(dir:Direction):
+	return {
+		Direction.EAST:True,
+		Direction.WEST:True,
+		Direction.NORTH: True,
+		Direction.SOUTH: True,
+		Direction.NORTHEAST:False,
+		Direction.SOUTHEAST: False,
+		Direction.NORTHWEST: False,
+		Direction.SOUTHWEST: False,
+		}[dir]
+
+def pos_length(pos:Position):
+	return pow(pos.x**2 + pos.y**2, 0.5)
+
 def pos_eq(a, b):
 		return a.x==b.x and a.y==b.y
 def pos_from(a: Position, b: Position):
@@ -48,10 +63,47 @@ def pos_add(a, b):
 	return Position(b.x+a.x, b.y+a.y)
 
 def pos_normalize(pos: Position, radius):
-	length = pow(pos.x**2 + pos.y**2, 0.5)
+	length = pos_length(pos)
 	if length == 0:
 		return pos
 	return Position(round(radius*pos.x/length), round(radius*pos.y/length))	
+
+def pos_y_direction(dir:Position):
+	if dir.y>=0:
+		return Direction.SOUTH
+	return Direction.NORTH
+
+def pos_x_direction(dir:Position):
+	if dir.x>=0:
+		return Direction.EAST
+	return Direction.WEST
+
+def closest_diagonal(direction):
+	if direction.x>=0:
+		if direction.y>=0:
+			return Direction.SOUTHEAST
+		return Direction.NORTHEAST
+	if direction.y>=0:
+		return Direction.SOUTHWEST
+	return Direction.NORTHWEST
+
+def dir_from_pos(pos):
+	if pos.x==0:
+		if pos.y==1:
+			return Direction.SOUTH
+		return Direction.NORTH
+	if pos.y ==0:
+		if pos.x==1:
+			return Direction.EAST
+		return Direction.WEST
+	if pos.x ==1:
+		if pos.y==1:
+			return Direction.SOUTHEAST
+		return Direction.NORTHEAST
+	if pos.y==1:
+		return Direction.SOUTHWEST
+	return Direction.NORTHWEST
+
 
 class Bot:
 	def turn_start(self,ct):
@@ -60,42 +112,34 @@ class Bot:
 	def turn_end(self, ct):
 		pass
 
+	
+
 class Bitboard:
 	def __init__(self, width, height):
 		self.height = height
 		self.width = width
 		self.map = 0
 
-	def set(self, pos: Position, value):
-		index = pos.y * self.width + pos.x
-		mask = 1<< index
-		if value:
-			self.map |= mask
-		else:
-			self.map &= ~mask
+	def set(self, pos: Position):
+		self.map |= 1<< (pos.y * self.width + pos.x)
+	
+	def clear(self, pos: Position):
+		self.map &= ~(1<<(pos.y * self.width + pos.x))
 	
 	def get(self, pos: Position):
 		index = pos.y * self.width + pos.x
 		return (self.map >> index) &1
 
-class Obstruction:
-	def __init__(self, pos):
-		self.bottom_right =pos
-		self.top_right = pos
-		self.top_left = pos
-		self.bottom_left = pos
-		
-class ObstructionPointer:
-	def __init__(self, obj:Obstruction):
-		self._obj = obj
+# class Obstruction:
+# 	def __init__(self, pos):
+# 		self.points = []
+# 		self.bottom_right =pos
+# 		self.top_right = pos
+# 		self.top_left = pos
+# 		self.bottom_left = pos
 	
-	def __getattr__(self, name):
-		return self._obj.__getattribute__(name)
-	
-	def merge(self, other):
-		self._obj.bottom_right = 
-		self._obj = other._obj
-		
+# 	def add(self, pos:Position):
+		# self.points.append(pos)
 
 class BuilderBot(Bot):
 	def __init__(self, ct: Controller, core_pos: Position, move_dir: Direction):
@@ -104,7 +148,7 @@ class BuilderBot(Bot):
 		# 0 for passable, 1 for not
 		self.map_width = ct.get_map_width()
 		self.map_height = ct.get_map_height()
-		self.passable_map = Bitboard(self.map_width, self.map_height)
+		self.obstruction_map = Bitboard(self.map_width, self.map_height)
 		self.seen_map = Bitboard(self.map_width, self.map_height)
 		self.ore_ti_map = Bitboard(self.map_width, self.map_height)
 		self.ores = []
@@ -124,53 +168,122 @@ class BuilderBot(Bot):
 				self.long_target = Position(self.map_width, core_pos.y)
 		path_dir = pos_normalize(pos_from(core_pos, self.long_target), 20**0.5)
 		self.targets = [ct.get_position().add(move_dir)]
-		self.path = []
+		self.path = [move_dir]
 
 	def turn_start(self, ct: Controller):
-		move_dir = self.fastest_path_dir(ct)
+		self.draw_path(ct, self.path[0:10],0,0,0)
+		self.draw_targets(ct)
+		move_dir = self.path.pop(0)
 		check_pos = ct.get_position().add(move_dir)
 		if ct.can_build_road(check_pos):
 			ct.build_road(check_pos)
 		if ct.can_move(move_dir):
 			ct.move(move_dir)
+			if self.targets and pos_eq(check_pos, self.targets[0]):
+				self.targets.pop(0)
+
+	def draw_targets(self, ct:Controller):
+		for pos in self.targets:
+			ct.draw_indicator_dot(pos, 255,0,0)
+		ct.draw_indicator_dot(self.long_target, 0,255,0)
+
+	def draw_path(self, ct:Controller, path, r,g,b):
+		current_pos = ct.get_position()
+		for dir in path:
+			next_pos = current_pos.add(dir)
+			ct.draw_indicator_line(current_pos, next_pos,r,g,b)
+			current_pos = next_pos
+
+	#returns (path, destination)
+	#where path: Direction[] and destination: Position
+	#is the furthest we can get in the direction of end goal in the naive approach
+	def straight_path_to_target(self,start, end):
+		path_dir = pos_from(start ,end)
+		steps = max(abs(path_dir.x), abs(path_dir.y))
+		num_diag = min(abs(path_dir.x), abs(path_dir.y))
+		num_non_diag = steps - num_diag
+		print(f"straight path ({start.x} {start.y}) ({end.x}, {end.y}) ", num_diag, num_non_diag)
+		y_dir = pos_y_direction(path_dir)
+		x_dir = pos_x_direction(path_dir)
+		non_diag_direction =x_dir if abs(path_dir.x) > abs(path_dir.y) else y_dir
+		diag_direction = closest_diagonal(Position(0,0).add(x_dir).add(y_dir))
+		path = []
+		current_pos = start
+		for i in range(steps):
+			# try and go diagonal first
+			if num_diag:
+				num_diag-=1
+				check_pos = current_pos.add(diag_direction)
+				if not self.obstruction_map.get(check_pos):
+					path.append(diag_direction)
+					current_pos = check_pos
+					continue
+			
+			#go in the non-diagonal direction
+			if not num_non_diag:
+				return (path, current_pos)
+			check_pos = current_pos.add(non_diag_direction)
+			if not self.obstruction_map.get(check_pos):
+				path.append(non_diag_direction)
+				current_pos = check_pos
+				num_non_diag -= 1
+			else:
+				return (path, current_pos)
+		return (path, current_pos)
+
+	def path_find(self, ct:Controller):
+		if self.targets:
+			start = self.targets[-1]
+		else:
+			start = ct.get_position()
+		end = self.long_target
+		ct.draw_indicator_dot(end, 255,255,255)
+
+		[path, destination_reached] = self.straight_path_to_target(start, end)
+		self.path += path
+		#follow the obstacle around in clockwise manner until we are closer than before
+		while not(pos_eq(destination_reached, end)):
+			self.targets.append(destination_reached)
+			ct.draw_indicator_dot(destination_reached, 0,0,255)
+			check_dir = destination_reached.direction_to(end)
+			current_pos = destination_reached
+			closest_distance = pos_length(pos_from(destination_reached, end))
+			while True:
+				check_dir = check_dir.rotate_left()
+				if dir_is_cardinal(check_dir):
+					check_dir = check_dir.rotate_left()
+				while self.obstruction_map.get(current_pos.add(check_dir)):
+					check_dir = check_dir.rotate_right()
+				self.path.append(check_dir)
+				
+				next_pos = current_pos.add(check_dir)
+				current_pos = next_pos
+				dist = pos_length(pos_from(current_pos, end))
+				print(f'({current_pos.x} {current_pos.y})', round(dist, 4), round(closest_distance,4))
+				if dist< closest_distance:
+					break
+
+			self.targets.append(current_pos)
+			[n_path, destination_reached] = self.straight_path_to_target(current_pos, end)
+			self.path += n_path
 
 	def turn_end(self,ct: Controller):
 		# change to only update edges based on which direction we last moved
 		self.scan_surroundings(ct)
-
-	def check_obstructions_to_target(self, path):
-		pass
-
-	def fastest_path_dir(self, ct: Controller):
-		if self.targets:
-			path_dir = pos_normalize(pos_from(self.targets[0], self.long_target), 20**0.5)
-		else:
-			path_dir = pos_normalize(pos_from(ct.get_position(), self.long_target), 20**0.5)
-		short_target = pos_add(ct.get_position(), path_dir)
-
-		for i in range(min(path_dir.x, path_dir.y))
-		while not pos_eq(check_pos, self.target):
-			if not self.passable_map.get(check_pos):
-				return check_dir
-				path.append(check_pos)
-				check_dir = path[-1].direction_to(self.target)
-			else:
-				check_dir = check_dir.rotate_left()
-			check_pos = path[-1].add(check_dir)
-		return Direction.NORTH
+		self.path_find(ct)
 	
 	def scan_surroundings(self, ct):
 		for tile_pos in ct.get_nearby_tiles():
 			if self.seen_map.get(tile_pos):
 				continue
-			self.seen_map.set(tile_pos,True)
+			self.seen_map.set(tile_pos)
 			match ct.get_tile_env(tile_pos):
 				case Environment.WALL:
-					self.passable_map.set(tile_pos, True)
+					self.obstruction_map.set(tile_pos)
 				case Environment.ORE_TITANIUM:
-					self.ore_ti_map.set(tile_pos, True)
+					self.ore_ti_map.set(tile_pos)
 				case Environment.ORE_AXIONITE:
-					self.ore_ti_map.set(tile_pos, True)
+					self.ore_ti_map.set(tile_pos)
 
 
 						
