@@ -174,12 +174,13 @@ class BuilderBot(Bot):
 
 	def turn_start(self, ct: Controller):
 		if self.path:
-			move_dir = self.path.pop(0)
+			move_dir = self.path[0]
 			check_pos = ct.get_position().add(move_dir)
 			if ct.can_build_road(check_pos):
 				ct.build_road(check_pos)
 			if ct.can_move(move_dir):
 				ct.move(move_dir)
+				self.path.pop(0)
 				if self.targets and pos_eq(ct.get_position(), self.targets[0]):
 					print(f"Reached target {self.targets[0].x} {self.targets[0].y}")
 					self.targets.pop(0)
