@@ -20,7 +20,7 @@ DIRECTIONS = [d for d in Direction if d != Direction.CENTRE]
 class Player:
     def __init__(self):
         self.first_turn = True
-        self.bot = None
+        self.bot: Bot
 
     def run(self, ct: Controller) -> None:
         if self.first_turn:
@@ -28,7 +28,7 @@ class Player:
             if etype == EntityType.CORE:
                 self.bot = Core(ct)
             elif etype == EntityType.BUILDER_BOT:
-                core_pos = None
+                core_pos: Position
                 move_dir = Direction.NORTH
                 # Find the core to determine starting coordinates and initial movement direction
                 for uID in ct.get_nearby_units():
