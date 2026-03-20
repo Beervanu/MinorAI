@@ -12,7 +12,7 @@ a marker recording the current round number
 
 import random
 
-from cambc import Controller, Direction, EntityType, Environment, Position
+from cambc import Controller, Direction, EntityType, Environment, Position, GameConstants
 
 # non-centre directions
 DIRECTIONS = [d for d in Direction if d != Direction.CENTRE]
@@ -143,6 +143,7 @@ class Bitboard:
 
 class BuilderBot(Bot):
 	def __init__(self, ct: Controller, core_pos: Position, move_dir: Direction):
+		self.vision_radius_sq = GameConstants.BUILDER_BOT_VISION_RADIUS_SQ
 		self.core_pos = core_pos
 		self.move_dir = move_dir
 		# 0 for passable, 1 for not
@@ -161,26 +162,27 @@ class BuilderBot(Bot):
 			case Direction.NORTH:
 				self.long_target = Position(core_pos.x, 0)
 			case Direction.SOUTH:
-				self.long_target = Position(core_pos.x, self.map_height)
+				self.long_target = Position(core_pos.x, self.map_height-1)
 			case Direction.WEST:
 				self.long_target = Position(0, core_pos.y)
 			case Direction.EAST:
-				self.long_target = Position(self.map_width, core_pos.y)
-		path_dir = pos_normalize(pos_from(core_pos, self.long_target), 20**0.5)
+				self.long_target = Position(self.map_width-1, core_pos.y)
 		self.targets = [ct.get_position().add(move_dir)]
+		self.last_seen_target_index = 0
 		self.path = [move_dir]
+		self.temp_path = []
 
 	def turn_start(self, ct: Controller):
-		self.draw_path(ct, self.path[0:10],0,0,0)
-		self.draw_targets(ct)
-		move_dir = self.path.pop(0)
-		check_pos = ct.get_position().add(move_dir)
-		if ct.can_build_road(check_pos):
-			ct.build_road(check_pos)
-		if ct.can_move(move_dir):
-			ct.move(move_dir)
-			if self.targets and pos_eq(check_pos, self.targets[0]):
-				self.targets.pop(0)
+		if self.path:
+			move_dir = self.path.pop(0)
+			check_pos = ct.get_position().add(move_dir)
+			if ct.can_build_road(check_pos):
+				ct.build_road(check_pos)
+			if ct.can_move(move_dir):
+				ct.move(move_dir)
+				if self.targets and pos_eq(ct.get_position(), self.targets[0]):
+					print(f"Reached target {self.targets[0].x} {self.targets[0].y}")
+					self.targets.pop(0)
 
 	def draw_targets(self, ct:Controller):
 		for pos in self.targets:
@@ -194,20 +196,33 @@ class BuilderBot(Bot):
 			ct.draw_indicator_line(current_pos, next_pos,r,g,b)
 			current_pos = next_pos
 
+	#returns true if successful, false if out of vision_radius
+	def add_to_path(self,dir:Direction):
+		self.temp_path.append(dir)
+		
+	def add_target(self, ct: Controller, pos:Position):
+		print(f"tried to add target: {pos.x} {pos.y}")
+		if self.in_vision(ct, pos):
+			self.targets.append(pos)
+			self.path += self.temp_path
+			print(f"added target: {pos.x} {pos.y}")
+			self.temp_path = []
+
+	def in_vision(self, ct, pos):
+		return ct.get_position().distance_squared(pos)<= self.vision_radius_sq
+	
 	#returns (path, destination)
 	#where path: Direction[] and destination: Position
 	#is the furthest we can get in the direction of end goal in the naive approach
-	def straight_path_to_target(self,start, end):
+	def straight_path_to_target(self,ct:Controller, start:Position, end:Position):
 		path_dir = pos_from(start ,end)
 		steps = max(abs(path_dir.x), abs(path_dir.y))
 		num_diag = min(abs(path_dir.x), abs(path_dir.y))
 		num_non_diag = steps - num_diag
-		print(f"straight path ({start.x} {start.y}) ({end.x}, {end.y}) ", num_diag, num_non_diag)
 		y_dir = pos_y_direction(path_dir)
 		x_dir = pos_x_direction(path_dir)
 		non_diag_direction =x_dir if abs(path_dir.x) > abs(path_dir.y) else y_dir
 		diag_direction = closest_diagonal(Position(0,0).add(x_dir).add(y_dir))
-		path = []
 		current_pos = start
 		for i in range(steps):
 			# try and go diagonal first
@@ -215,21 +230,21 @@ class BuilderBot(Bot):
 				num_diag-=1
 				check_pos = current_pos.add(diag_direction)
 				if not self.obstruction_map.get(check_pos):
-					path.append(diag_direction)
+					self.add_to_path(diag_direction)
 					current_pos = check_pos
 					continue
 			
 			#go in the non-diagonal direction
 			if not num_non_diag:
-				return (path, current_pos)
+				return current_pos
 			check_pos = current_pos.add(non_diag_direction)
 			if not self.obstruction_map.get(check_pos):
-				path.append(non_diag_direction)
+				self.add_to_path(non_diag_direction)
 				current_pos = check_pos
 				num_non_diag -= 1
 			else:
-				return (path, current_pos)
-		return (path, current_pos)
+				return current_pos
+		return current_pos
 
 	def path_find(self, ct:Controller):
 		if self.targets:
@@ -237,40 +252,52 @@ class BuilderBot(Bot):
 		else:
 			start = ct.get_position()
 		end = self.long_target
+		self.temp_path = []
 		ct.draw_indicator_dot(end, 255,255,255)
 
-		[path, destination_reached] = self.straight_path_to_target(start, end)
-		self.path += path
+		destination_reached = self.straight_path_to_target(ct, start, end)
+		if not pos_eq(start, destination_reached):
+			self.add_target(ct, destination_reached)
 		#follow the obstacle around in clockwise manner until we are closer than before
 		while not(pos_eq(destination_reached, end)):
-			self.targets.append(destination_reached)
-			ct.draw_indicator_dot(destination_reached, 0,0,255)
 			check_dir = destination_reached.direction_to(end)
 			current_pos = destination_reached
-			closest_distance = pos_length(pos_from(destination_reached, end))
+			closest_distance_sq = destination_reached.distance_squared(end)
 			while True:
 				check_dir = check_dir.rotate_left()
 				if dir_is_cardinal(check_dir):
 					check_dir = check_dir.rotate_left()
 				while self.obstruction_map.get(current_pos.add(check_dir)):
 					check_dir = check_dir.rotate_right()
-				self.path.append(check_dir)
+				current_pos = current_pos.add(check_dir)
+				self.add_to_path(check_dir)
 				
-				next_pos = current_pos.add(check_dir)
-				current_pos = next_pos
-				dist = pos_length(pos_from(current_pos, end))
-				print(f'({current_pos.x} {current_pos.y})', round(dist, 4), round(closest_distance,4))
-				if dist< closest_distance:
+				if current_pos.distance_squared(end)< closest_distance_sq:
 					break
 
-			self.targets.append(current_pos)
-			[n_path, destination_reached] = self.straight_path_to_target(current_pos, end)
-			self.path += n_path
+			self.add_target(ct, current_pos)
+			destination_reached = self.straight_path_to_target(ct, current_pos, end)
+			self.add_target(ct, destination_reached)
+
+
+		if not self.targets:
+			pos = ct.get_position()
+			keep_path = []
+			for dir in self.temp_path:
+				check_pos = pos.add(dir)
+				if not self.in_vision(ct, check_pos):
+					self.temp_path = keep_path
+					self.add_target(ct, pos)
+					break
+				pos = check_pos
+				keep_path.append(dir)
 
 	def turn_end(self,ct: Controller):
 		# change to only update edges based on which direction we last moved
 		self.scan_surroundings(ct)
 		self.path_find(ct)
+		self.draw_path(ct, self.path,0,0,0)
+		self.draw_targets(ct)
 	
 	def scan_surroundings(self, ct):
 		for tile_pos in ct.get_nearby_tiles():
