@@ -58,7 +58,7 @@ class Bot:
 		# What's a bitboard you ask? Well look no further Motion has got you covered.
 		# Essentially we map every tile on the map to a index on a binary number
 		# So if we had a 4 tile map a bitboard would look something like 0110 where tile 1 is assigned the value 0 and tile 3 is assigned 1
-		# Why use bit boards? 
+		# Why use bit boards? Parallel queries. We can check if a tile is a wall by doing a single logical AND between the walls bitboard and a bitmask with a 1 at the index of the tile we want to query. This is much faster than querying the tile environment through the API every time we want to check if a tile is a wall.
 
 		# Run the map scan upon spawn
 		self._init_static_bitboards(ct)
@@ -68,6 +68,7 @@ class Bot:
 		  O(n) where n is the number of tiles on the map. WITHIN THE VISION RANGE (I forgot about the vision constraint)."""
 		
 		# Unfortunately there is no exploit to query the whole map then save it to a bit board.
+		# So we have to scan the visible map tile by tile and set the corresponding bits in the bit boards. This is O(n) where n is the number of tiles in vision range.	
 		for pos in ct.get_nearby_tiles():
 			# Get the correct index of the bit you are affecting
 			index = pos.y * self.map_width + pos.x
@@ -284,6 +285,7 @@ class BuilderBot(Bot):
 
 					# Heuristic target: if goal is ore, we aim for adjacency (distance 1),
 					# so we substract 1 from the chebyshev distance to stay admissible.
+					# This is where the magic happens. The heuristic is what differentiates the neighbours. We want to prioritise neighbours that are closer to the target (Chebyshev distance). 
 					if goal_is_ore:
 						h = max(0, self.chebyshev(neighbour, goal) - 1)
 					else:
