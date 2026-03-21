@@ -223,7 +223,7 @@ class BuilderBot(Bot):
 
 	def a_star(self, start: Position, goal: Position):
 		"""
-		A* search from start to gaol.
+		A* search from start to goal.
 		
 		Returns a list of Positions representing the path (excluding start, including the final walkable tile adjacent to the goal)
 		Or None if no path is found
@@ -267,6 +267,14 @@ class BuilderBot(Bot):
 			else:
 				if current == goal:
 					return self.reconstruct_path(came_from, current)
+				
+			"""
+			A note on the reconstruction of the path. Since the heuristic is admissible is it guaranteed that the path taken to get to the current tile is the optimal path. 
+			Hence we can reconstruct the optimal path to the target by backtracking through the came_from map from the target to the start.
+			If you look below after we add the closed set as we explore all of its adjacent tiles. We then add it's neighbour to the open set using heap pus which orders the open set by the f score. 
+			If you look above we pop the tile with the lowest f score then we add that tile to the closed set once again as we look through it's neighbours.
+			This means we always explore the tile with the lowest f score first and we never explore a tile more than once. Hence when we reach the target tile we have explored the optimal path to get there and we can reconstruct it using the came_from map.
+			"""
 				
 			closed_set.add(current)
 
@@ -345,7 +353,7 @@ class BuilderBot(Bot):
 		for pos in self.path[self.path_index:]:
 			remaining_board = self.set_bit(remaining_board, pos)
 
-		# AND wit walls - non-zero, a wall is blocking the path
+		# AND with walls - non-zero, a wall is blocking the path
 		return (remaining_board & self.walls_board) != 0
 
 	def follow_path(self, ct: Controller) -> bool:
