@@ -8,10 +8,7 @@ import time
 # non-centre directions
 DIRECTIONS = [d for d in Direction if d != Direction.CENTRE]
 CARDINAL_DIRECTIONS = [Direction.NORTH, Direction.SOUTH, Direction.EAST, Direction.WEST]
-MESSAGE_TYPE = {
-	'MOVEMENT': 0,
-	'CORE_POS': 1
-}
+
 
 class GenericTask(Enum):
 	NOTHING = 'Nothing'
@@ -71,7 +68,8 @@ class Bot:
 		self.team_buildings_board = 0
 		self.enemy_buildings_board = 0
 		self.team_bridges_board = 0
-		
+		self.own_markers_board = 0
+
 		# 1 1 1
 		# 1 0 1 mask
 		# 1 1 1 
@@ -209,9 +207,12 @@ class Bot:
 				etype = ct.get_entity_type(building_id)
 				is_team: bool = ct.get_team() == ct.get_team(building_id)
 				if is_team:
-					self.team_buildings_board= self.set_bit(self.team_buildings_board, pos)
-					if etype == EntityType.BRIDGE:
-						self.team_bridges_board = self.set_bit(self.team_bridges_board,pos)
+					if etype == EntityType.MARKER:
+						if self.own_markers_board 
+					else:
+						self.team_buildings_board= self.set_bit(self.team_buildings_board, pos)
+						if etype == EntityType.BRIDGE:
+							self.team_bridges_board = self.set_bit(self.team_bridges_board,pos)
 				else:
 					self.enemy_buildings_board= self.set_bit(self.enemy_buildings_board, pos)
 
