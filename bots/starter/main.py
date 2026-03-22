@@ -1,21 +1,23 @@
-"""Starter bot - a simple example to demonstrate usage of the Controller API.
-
-Each unit gets its own Player instance; the engine calls run() once per round.
-Use Controller.get_entity_type() to branch on what kind of unit you are.
-
-This bot:
-- Core: spawns up to 3 builder bots on random adjacent tiles
-- Builder bot: builds a harvester on any adjacent ore tile, then moves in a
-random direction (laying a road first so the tile is passable), and places
-a marker recording the current round number
-"""
-
+from math import log2, floor
+from typing import TypedDict, Any, Callable
 import heapq
-
+from enum import Enum
 from cambc import Controller, Direction, EntityType, Environment, Position
 
 # non-centre directions
 DIRECTIONS = [d for d in Direction if d != Direction.CENTRE]
+CARDINAL_DIRECTIONS = [Direction.NORTH, Direction.SOUTH, Direction.EAST, Direction.WEST]
+
+class BuilderTask(Enum):
+	FIND_ORE = 'FindOre'
+	BUILD_BRIDGE = 'BuildBridge'
+	FOUND_ORE = 'FoundOre'
+type Task = BuilderTask
+class TaskData(TypedDict):
+	type: Task
+	data: Any
+
+
 
 class Player:
     def __init__(self):
@@ -42,7 +44,6 @@ class Player:
         
         self.bot.turn_start(ct)
         self.bot.turn_end(ct)
-		
 
 class Bot:
 	def __init__(self, ct: Controller):
@@ -55,6 +56,32 @@ class Bot:
 		self.axionite_ores_board = 0
 		self.titanium_ores_board = 0
 		self.walkable_board = 0
+		
+		# 1 1 1
+		# 1 0 1 mask
+		# 1 1 1 
+		self.direct_neighbour_mask = self.generate_mask([0b111, 0b101,0b111])
+		# 1
+		# 1 mask
+		# 1
+		self.direct_neighbour_vertical_mask = self.generate_mask([0b1]*3)
+
+		# 1 1 1 mask
+		self.direct_neighbour_horizontal_mask = 0b111
+
+		self.bridge_neighbour_mask = self.generate_mask([
+			0b0001000, 
+			0b0111110, 
+			0b0111110,
+			0b1110111,
+			0b0111110,
+			0b0111110,
+			0b0001000,])
+		
+		self.bridge_neighbour_vertical_mask = self.generate_mask([0b1]*7)
+		self.bridge_neighbour_horizontal_mask = 0b1111111
+
+
 		# What's a bitboard you ask? Well look no further Motion has got you covered.
 		# Essentially we map every tile on the map to a index on a binary number
 		# So if we had a 4 tile map a bitboard would look something like 0110 where tile 1 is assigned the value 0 and tile 3 is assigned 1
@@ -62,6 +89,26 @@ class Bot:
 
 		# Run the map scan upon spawn
 		self._init_static_bitboards(ct)
+		self.task: TaskData
+		self.task_backlog: list[TaskData] = []
+		self.task_priority: dict[Task, int]
+
+	def generate_mask(self, arr: list[int])->int:
+		mask = 0
+		for i in range(len(arr)):
+			mask+=arr[i]<<(self.map_width*i)
+		return mask
+
+
+	def pop_lsb(self, bitboard:int)-> tuple[int, Position]:
+		"""Gets the 1-lsb from a bitboard and then returns the bitboard with that bit set to 0 and the extracted position."""
+		# bitboard & -bitboard to isolate the 1-lsb
+		isolated_bit = bitboard & -bitboard
+		# gets the index
+		index = int(log2(isolated_bit))
+		# removes the bit we just processed
+		bitboard &= ~isolated_bit
+		return (bitboard, Position(index % self.map_width,floor(index/self.map_width)))
 
 	def _init_static_bitboards(self, ct: Controller):
 		"""Scans the map and initialises bitboards for walls, ores, and walkable tiles.
@@ -136,10 +183,14 @@ class Bot:
 			# Hence the logical OR will always return 1 between the two boards
 			# And it is being logical ANDed with the bit mask which is guaranteed to be 1 at this position.
 			# In the case that this block has just entered the vision range both boards will be 0 and the logical OR will return 0.
-			if (self.walkable_board | self.walls_board) & bitmask:
+			if (self.walls_board ) & bitmask:
 				continue
 			
 			env = ct.get_tile_env(pos)
+			building_id = ct.get_tile_building_id(pos)
+
+			if building_id and not (ct.get_entity_type(building_id) == EntityType.BRIDGE and ct.get_team(building_id) == ct.get_team()):
+				self.buildings_board |= bitmask
 			if env == Environment.WALL:
 				self.walls_board |= bitmask
 			else:
@@ -162,25 +213,53 @@ class Bot:
 	def turn_end(self, ct):
 		pass
 
+	def add_task(self, task: Task, data: object)->bool:
+		"""Adds the given task, and decides whether to execute the task based on its priority. Returns True if we are switching to that task, False if not """
+		#if no task, switch to that task
+		if not self.task:
+			self.task = {'type':task, 'data':data}
+			return True
+		# else add it to backlog
+		self.task_backlog.append({"type":task, "data":data})
+		self.task_backlog.sort(key=lambda x: self.task_priority[x['type']])
+		return False
+	
+		# # if higher task priority, bench the current task and switch to it
+			# if self.task_priority[self.task['type']] < self.task_priority[task]:
+			# 	self.task_backlog.insert(0, self.task)
+			# 	self.task = {'type':task, 'data':data}
+			# 	return True
+
+	def task_complete(self,ct:Controller):
+		if self.task_backlog:
+			self.task = self.task_backlog.pop(0)
+		else:
+			self.task = {'type':BuilderTask.FIND_ORE,'data': None}
 
 class BuilderBot(Bot):
 	def __init__(self, ct:Controller, core_pos: Position, move_dir: Direction):
 		# Initialises the parent class (Bot) to generate the bit boards and inherit the corresponding variables and functions
 		super().__init__(ct)
-
 		self.core_pos = core_pos
 		self.move_dir = move_dir
 		self.target = None 
 		self.conveying = False 
 		self.returning = False
-
+		#task 
+		self.task = {"type": BuilderTask.FIND_ORE, "data": None}
 		# Bitboard for the buildings
 		self.buildings_board = 0
 		
 		# The ordered list of positions and the corresponding bitboard
+		self.bridge_path = []
+		self.bridge_path_index = 0
+		self.bridge_path_board = None
 		self.path = [] # List[Position] - ordered steps from current position to target
 		self.path_index = 0 # How far along the path we are
 		self.path_board = None # Bitboard representation of the path for parallel collision detection
+
+		self.task_priority = {BuilderTask.FIND_ORE: 0, BuilderTask.FOUND_ORE: 1, BuilderTask.BUILD_BRIDGE:2}
+		self.tasks_adjacent_aim = {BuilderTask.FIND_ORE: False, BuilderTask.FOUND_ORE:True, BuilderTask.BUILD_BRIDGE: True}
 
 	# Static so it can be alled through the class without needing to pass in self
 	@staticmethod
@@ -195,33 +274,78 @@ class BuilderBot(Bot):
 		Returns walkable neighbour positions (non-wall, non-ore, in-bounds)
 		Ore is excluded as the bots can not walk on ore.
 		"""
+		neighbour_bit_mask = self.direct_neighbour_mask
+		
+		#if we are on the edge, remove the mask that extends beyond that edge
+		if pos.x == 0:
+			neighbour_bit_mask &= ~self.direct_neighbour_vertical_mask
+		elif pos.x == self.map_width-1:
+			neighbour_bit_mask &= ~(self.direct_neighbour_vertical_mask<<2)
+		
+		if pos.y==0:
+			neighbour_bit_mask &= ~self.direct_neighbour_horizontal_mask
+		elif pos.y == self.map_height-1:
+			neighbour_bit_mask &= ~(self.direct_neighbour_horizontal_mask<<(self.map_width*2))
 
-		for d in DIRECTIONS:
-			# Delta returns the (dx,dy) for a step in the given direction
-			nx, ny = pos.x + d.delta()[0], pos.y + d.delta()[1]
+		index = pos.y*self.map_width + pos.x
+		neighbour_bit_mask<<=index
+		# shift to recenter bitmask on index - order is important, else we might delete part of the mask
+		neighbour_bit_mask >>= self.map_width + 1
+		neighbours = (~self.walls_board) & (~self.titanium_ores_board) & (~self.axionite_ores_board) & (~self.buildings_board) & neighbour_bit_mask
+		temp = neighbour_bit_mask
+		print('neighbours')
+		while temp:
+			(temp, t) = self.pop_lsb(temp)
+			print(t)
+		print('walls')
+		temp = self.walls_board
+		while temp:
+			(temp, t) = self.pop_lsb(temp)
+			print(t)
+		while neighbours:
+			(neighbours, nb) = self.pop_lsb(neighbours)
+			yield nb
 
-			# Bounds check
-			if nx < 0 or nx >= self.map_width or ny < 0 or ny >= self.map_height:
-				continue
-			
-			neighbour = Position(nx, ny)
-			index = ny * self.map_width + nx 
-			bitmask = 1 << index
+	def get_bridge_neighbours(self, pos: Position):
+		"""
+		Returns bridge-buildable neighbour positions (non-wall, non-ore, in-bounds)
+		Ore is excluded as the bots can not walk on ore.
+		"""
+		neighbour_bit_mask = self.bridge_neighbour_mask
 
-			# Wall check via bitboard
-			
-			if (self.walls_board & bitmask) != 0: 
-				continue
-			# Ore check
-			if (self.titanium_ores_board & bitmask) != 0:
-				continue
-			if (self.axionite_ores_board & bitmask) != 0:
-				continue
-			
-			# Yield turns this function into a function generator. It is queried by a for each loop.
-			yield neighbour
+		#if we are on the edge, remove the mask that extends beyond that edge
+		if pos.x <3:
+			remove_mask = 0
+			for i in range(3-pos.x):
+				remove_mask |= self.bridge_neighbour_vertical_mask<<i
+			neighbour_bit_mask &= ~remove_mask
+		elif pos.x >= self.map_width-3:
+			remove_mask = 0
+			for i in range(3-(self.map_width-1-pos.x)):
+				remove_mask |= self.bridge_neighbour_vertical_mask<<(4+i)
+			neighbour_bit_mask &= ~(remove_mask)
+		
+		if pos.y==0:
+			remove_mask = 0
+			for i in range(3-pos.y):
+				remove_mask |= self.bridge_neighbour_horizontal_mask<<(self.map_width*i)
+			neighbour_bit_mask &= ~remove_mask
+		elif pos.y == self.map_height-1:
+			remove_mask = 0
+			for i in range(3-(self.map_width-1-pos.y)):
+				remove_mask |= self.bridge_neighbour_vertical_mask<<(self.map_width*(4+i))
+			neighbour_bit_mask &= ~(self.bridge_neighbour_mask)
 
-	def a_star(self, start: Position, goal: Position):
+		index = pos.y*self.map_width + pos.x
+		neighbour_bit_mask<<=index
+		# shift to recenter bitmask on index - order is important, else we might delete part of the mask
+		neighbour_bit_mask >>= self.map_width*3 + 3
+		neighbours = (~self.walls_board) & (~self.titanium_ores_board) & (~self.axionite_ores_board) & neighbour_bit_mask
+		while neighbours:
+			(neighbours, nb) = self.pop_lsb(neighbours)
+			yield nb
+
+	def a_star(self, start: Position, goal: Position, bridge:bool =False):
 		"""
 		A* search from start to gaol.
 		
@@ -229,11 +353,13 @@ class BuilderBot(Bot):
 		Or None if no path is found
 		"""
 
+		neighbour_function = self.get_neighbours
+		if bridge:
+			neighbour_function = self.get_bridge_neighbours
+
 		# If the goal is ore, we want to reach an adjacent tile, not the ore itself.
 		# Check using if the goal is on the bots current ore bitboard
-		goal_is_ore = (
-			self.check_bit(self.titanium_ores_board, goal) or self.check_bit(self.axionite_ores_board, goal)
-		)
+		aim_adjacent = self.tasks_adjacent_aim[self.task['type']] and not bridge
 
 		# Open set: The ordered set of tiles yet to be explored.
 		# Priority queue of (f_score, tiebreaker, position) f score from the f(n) = g(n) + h(n) equation in the A* definition
@@ -259,9 +385,9 @@ class BuilderBot(Bot):
 			if current in closed_set:
 				continue
 
-			# Goal check: if the target is ore, we stop when we are adjacent to it.
+			# Goal check: if we are aiming adjacent to our target, we stop when we are adjacent to it.
 			# Otherwise we stop when we reach the goal itself.
-			if goal_is_ore:
+			if aim_adjacent:
 				if current.distance_squared(goal) <= 2:
 					return self.reconstruct_path(came_from, current)
 			else:
@@ -269,8 +395,7 @@ class BuilderBot(Bot):
 					return self.reconstruct_path(came_from, current)
 				
 			closed_set.add(current)
-
-			for neighbour in self.get_neighbours(current):
+			for neighbour in neighbour_function(current):
 				if neighbour in closed_set:
 					continue
 				
@@ -286,7 +411,7 @@ class BuilderBot(Bot):
 					# Heuristic target: if goal is ore, we aim for adjacency (distance 1),
 					# so we substract 1 from the chebyshev distance to stay admissible.
 					# This is where the magic happens. The heuristic is what differentiates the neighbours. We want to prioritise neighbours that are closer to the target (Chebyshev distance). 
-					if goal_is_ore:
+					if aim_adjacent:
 						h = max(0, self.chebyshev(neighbour, goal) - 1)
 					else:
 						h = self.chebyshev(neighbour, goal)
@@ -297,7 +422,6 @@ class BuilderBot(Bot):
 
 		# No path found
 		return None
-
 
 	def reconstruct_path(self, came_from: dict, current: Position):
 		"""
@@ -317,8 +441,7 @@ class BuilderBot(Bot):
 		"""
 		Runs A* and stores the result as noth a position list and a path bitboard.
 		"""
-		result = self.a_star(start, goal)
-
+		result = self.a_star(start, goal, False)
 		if result is None:
 			self.path = []
 			self.path_index = 0
@@ -335,17 +458,38 @@ class BuilderBot(Bot):
 
 		return True
 	
-	def check_path_collisions(self) -> bool:
+	def compute_bridge_path(self, start:Position, goal:Position):
+		"""
+		Runs A* and stores the result as noth a position list and a path bitboard.
+		"""
+		result = self.a_star(start, goal, True)
+		if result is None:
+			self.bridge_path = []
+			self.bridge_path_index = 0
+			self.bridge_path_board = 0
+			return False
+		
+		self.bridge_path =[start]+ result
+		self.path_index = 0
+
+		# Build the path bitboard for collision detection later 
+		self.bridge_path_board = 0
+		for pos in self.bridge_path:
+			self.bridge_path_board = self.set_bit(self.bridge_path_board, pos)
+
+		return True
+
+	def check_path_collisions(self, path, index) -> bool:
 		"""
 		Returns True if any obstacle now overlaps the remaining path.
 		"""
 
 		remaining_board = 0
 		# The : after self.path_index is string slicing to get the remaining path from the current position to the target
-		for pos in self.path[self.path_index:]:
+		for pos in path[index:]:
 			remaining_board = self.set_bit(remaining_board, pos)
 
-		# AND wit walls - non-zero, a wall is blocking the path
+		# AND with walls - non-zero, a wall is blocking the path
 		return (remaining_board & self.walls_board) != 0
 
 	def follow_path(self, ct: Controller) -> bool:
@@ -382,6 +526,13 @@ class BuilderBot(Bot):
 		for pos in ct.get_nearby_tiles():
 			env = ct.get_tile_env(pos)
 			if env in (Environment.ORE_TITANIUM, Environment.ORE_AXIONITE):
+				building_id = ct.get_tile_building_id(pos)
+				if building_id:
+					if ct.get_team(building_id) == ct.get_team():
+						continue
+					else:
+						continue
+						#TODO what do we do when we encounter enemy harvesters
 				dist = self.chebyshev(current_pos, pos)
 				if dist < best_dist:
 					best_dist = dist
@@ -390,54 +541,125 @@ class BuilderBot(Bot):
 		return best_pos
 	
 	def turn_start(self, ct: Controller):
+		print(f'Task: {self.task['type']}, Data: {self.task['data']}')
 		# Update our map with any newly visible terrain
 		self.update_terrain_vision(ct)
 
 		current_pos = ct.get_position()
 
-		# If we have no target, look for ore
+		keep_processing_tasks = True
+		while (keep_processing_tasks):
 
-		if self.target is None:
-			ore_pos = self.find_nearest_ore(ct)
-			if ore_pos:
-				self.target = ore_pos
+			if self.target is None:
+				keep_processing_tasks = self.process_tasks(ct)
+				continue
+			elif not self.path:
 				self.compute_path(current_pos, self.target)
-			else:
-				# No ore visible - explore by moving in the bots assigned direction.
-				# Buiild a road and step if we can.
-				next_pos = current_pos.add(self.move_dir)
-				if(0 <= next_pos.x < self.map_width and 0 <= next_pos.y < self.map_height and not self.check_bit(self.walls_board, next_pos)):
-					if (ct.get_action_cooldown() == 0 and ct.can_build_road(next_pos)):
-						ct.build_road(next_pos)
-					if ct.can_move(self.move_dir):
-						ct.move(self.move_dir)
+			# Check if the current cached path has been blocked
+			if self.path and self.check_path_collisions(self.path, self.path_index):
+				# Path is blocked, need to recompute
+				self.compute_path(current_pos, self.target)
 
-				else:
-					# Hit a wall or map edge - rotate and try again next turn
-					self.move_dir = self.move_dir.rotate_right()
-				return
-			
-		# We have a target, are we adjacent to it?
-		if current_pos.distance_squared(self.target) <= 2:
-			if ct.get_action_cooldown() == 0 and ct.can_build_harvester(self.target):
-				ct.build_harvester(self.target)
-				self.target = None # Clear target to look for a new ore next turn
-				self.path = [] # Clear path as well
-				self.path_board = 0
-			return
-		
-		# Check if the current cached path has been blocked
-		if self.path and self.check_path_collisions():
-			# Path is blocked, need to recompute
-			self.compute_path(current_pos, self.target)
-
-		# If path is valid follow it
-		if self.path and self.path_index < len(self.path):
-			self.follow_path(ct)
-		else:
-			# No valid path - try recomputing (maybe we have seen new terrain)
-			if self.compute_path(current_pos, self.target):
+			# If path is valid follow it
+			if self.path and self.path_index < len(self.path):
 				self.follow_path(ct)
+			else:
+				# No valid path - try recomputing (maybe we have seen new terrain)
+				if self.compute_path(current_pos, self.target):
+					self.follow_path(ct)
+			
+			keep_processing_tasks = self.process_tasks(ct)
+		if self.path:
+			self.draw_path(ct, self.path, self.path_index)
+			
+
+	def draw_path(self, ct:Controller, path, path_index, ):
+		increase = 50
+		col=255
+		for pos in path[path_index:]:
+			col-=increase
+			col = max(col, 0)
+			ct.draw_indicator_dot(pos, col,col,col)
+
+	def process_tasks(self, ct:Controller):
+		"""Processes the current task, returning True if we should continue processing"""
+		current_pos = ct.get_position()
+		reached_target = not self.target is None and current_pos.distance_squared(self.target) <=2
+		match self.task['type']:
+			case BuilderTask.FIND_ORE:
+				ore_pos = self.find_nearest_ore(ct)
+				if ore_pos:
+					self.add_task(BuilderTask.FOUND_ORE, ore_pos)
+					self.task_complete(ct)
+					return True
+				else:
+					# No ore visible - explore by moving in the bots assigned direction.
+					# TODO: use bug path finding?
+					# Build a road and step if we can.
+					next_pos = current_pos.add(self.move_dir)
+					if(0 <= next_pos.x < self.map_width and 0 <= next_pos.y < self.map_height and not self.check_bit(self.walls_board, next_pos)):
+						if (ct.get_action_cooldown() == 0 and ct.can_build_road(next_pos)):
+							ct.build_road(next_pos)
+						if ct.can_move(self.move_dir):
+							ct.move(self.move_dir)
+
+					else:
+						# this is dog
+						# Hit a wall or map edge - rotate and try again next turn
+						self.move_dir = self.move_dir.rotate_right()
+			case BuilderTask.FOUND_ORE:
+				self.target = self.task['data']
+				if reached_target:
+					if ct.get_action_cooldown() == 0 and ct.can_build_harvester(self.target):
+						ct.build_harvester(self.target)
+						# TODO: Choose a direction from which to build a bridge from properly - this will error when we try to build from an ore on the top of the map
+						core_dir_aim = [self.core_pos.add(d) for d in CARDINAL_DIRECTIONS]
+						core_dir_aim.sort(key=lambda dir: self.chebyshev(self.target, dir))
+						self.add_task(BuilderTask.BUILD_BRIDGE, (self.target.add(Direction.NORTH), core_dir_aim[0]))
+						self.task_complete(ct)
+						return True
+			case BuilderTask.BUILD_BRIDGE:
+				if not self.bridge_path or self.check_path_collisions(self.bridge_path, self.bridge_path_index):
+					self.compute_bridge_path(self.task['data'][0], self.task['data'][1])
+				
+					self.target = self.bridge_path[0]
+				if reached_target:
+					#get rid of roads in the way
+					building_id = ct.get_tile_building_id(self.target) # type: ignore
+					if building_id:
+						if ct.get_entity_type(building_id) == EntityType.ROAD and ct.can_destroy(self.target): # type: ignore
+							ct.destroy(self.target) # type: ignore
+						elif ct.get_entity_type(building_id) == EntityType.BRIDGE:
+							self.task_complete(ct)
+							return True
+
+					#try to build the bridge		
+					if ct.get_action_cooldown() == 0 and ct.can_build_bridge(self.target, self.bridge_path[self.bridge_path_index+1]): # type: ignore
+						ct.build_bridge(self.target, self.bridge_path[self.bridge_path_index+1]) # type: ignore
+						self.bridge_path_index+=1
+						self.target = self.bridge_path[self.bridge_path_index]
+						if self.bridge_path_index == len(self.bridge_path)-1:
+							#TODO: spawn a protector bot?
+
+							self.task_complete(ct)
+							return True
+				else:
+					print('Path: ')
+					for pos in self.path:
+						print(f'({pos.x} {pos.y}) P: {self.check_bit(self.walkable_board, pos)} WL: {self.check_bit(self.walls_board, pos)} CP: {self.check_path_collisions(self.path, self.path_index)}')
+		return False
+
+	def task_complete(self, ct:Controller):
+		#reset the paths upon task completion
+		self.target = None
+		self.path = []
+		self.path_index = 0
+		self.path_board = 0
+		self.bridge_path = []
+		self.bridge_path_index =0
+		self.bridge_path_board =0
+		super().task_complete(ct)
+		
 
 class Core(Bot):
 	def __init__(self, ct: Controller):
