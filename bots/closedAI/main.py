@@ -9,11 +9,15 @@ import time
 DIRECTIONS = [d for d in Direction if d != Direction.CENTRE]
 CARDINAL_DIRECTIONS = [Direction.NORTH, Direction.SOUTH, Direction.EAST, Direction.WEST]
 
+class GenericTask(Enum):
+	NOTHING = 'Nothing'
+
 class BuilderTask(Enum):
 	FIND_ORE = 'FindOre'
 	BUILD_BRIDGE = 'BuildBridge'
-	FOUND_ORE = 'FoundOre'
-type Task = BuilderTask
+	FOUND_TI_ORE = 'FoundTiOre'
+	FOUND_AX_ORE = 'FoundAxOre'
+type Task = BuilderTask | GenericTask
 class TaskData(TypedDict):
 	type: Task
 	data: Any
@@ -51,7 +55,9 @@ class Bot:
 		# Cache map dimensions gloabally for this unit
 		self.map_width = ct.get_map_width()
 		self.map_height = ct.get_map_height()
-
+		self.task: TaskData = {'type': GenericTask.NOTHING, 'data': None}
+		self.task_backlog: list[TaskData] = []
+		self.task_priority: dict[Task, int]	
 		# Initialisation of bitboards for different map features
 		self.seen_board = 0
 		self.walls_board = 0
@@ -59,7 +65,7 @@ class Bot:
 		self.titanium_ores_board = 0
 		self.walkable_board = 0
 		self.buildings_board = 0
-		self.bridges_board = 0
+		self.team_bridges_board = 0
 		
 		# 1 1 1
 		# 1 0 1 mask
@@ -93,9 +99,7 @@ class Bot:
 
 		# Run the map scan upon spawn
 		self._init_static_bitboards(ct)
-		self.task: TaskData
-		self.task_backlog: list[TaskData] = []
-		self.task_priority: dict[Task, int]
+		
 
 	def generate_mask(self, arr: list[int])->int:
 		mask = 0
@@ -116,7 +120,6 @@ class Bot:
 
 	def _init_static_bitboards(self, ct: Controller):
 		"""shit ass function"""
-		print("initial scan: ")
 		self.update_terrain_vision(ct)
 	
 	def check_bit(self, bitboard:int, pos: Position) -> bool:
@@ -152,7 +155,7 @@ class Bot:
 		# And with the NOT of the bitmask so everything is flipped.
 		# This means that the index of input tile is set to 0 and everything is set to 1. And well 0 AND anything is 0.
 		return bitboard & ~(bitmask)
-	
+
 	def update_terrain_vision(self, ct:Controller):
 		"""Called after moving to map newly revealed terrain."""  
 		# This acts as a way to fill in the dark areas of map memory.
@@ -164,26 +167,33 @@ class Bot:
 			# In the case that this block has just entered the vision range both boards will be 0 and the logical OR will return 0.
 			if self.check_bit(self.walls_board,pos):
 				continue
-			self.seen_board = self.set_bit(self.seen_board, pos)
+			
 			env = ct.get_tile_env(pos)
-			if env == Environment.WALL:
-				self.walls_board = self.set_bit(self.walls_board,pos)
-			elif env == Environment.EMPTY:
-				self.walkable_board = self.set_bit(self.walkable_board, pos)
-			else:
-				if ct.is_tile_passable(pos):
+			if not self.check_bit(self.seen_board, pos):
+				if env == Environment.WALL:
+					self.walls_board = self.set_bit(self.walls_board,pos)
+				elif env == Environment.EMPTY:
 					self.walkable_board = self.set_bit(self.walkable_board, pos)
-				building_id = ct.get_tile_building_id(pos)
-				if building_id:
-					etype = ct.get_entity_type()
-					self.buildings_board= self.set_bit(self.buildings_board, pos)
-					if etype == EntityType.BRIDGE:
-						self.bridges_board = self.set_bit(self.bridges_board,pos)
-				if env == Environment.ORE_TITANIUM:
+				elif env == Environment.ORE_TITANIUM:
 					self.titanium_ores_board = self.set_bit(self.titanium_ores_board,pos)
+					if isinstance(self, BuilderBot):
+						self.add_task(BuilderTask.FOUND_TI_ORE, pos)
 				elif env == Environment.ORE_AXIONITE:
 					self.axionite_ores_board = self.set_bit(self.axionite_ores_board,pos)
+					if isinstance(self, BuilderBot):
+						self.add_task(BuilderTask.FOUND_AX_ORE, pos)
+				self.seen_board = self.set_bit(self.seen_board, pos)
 				
+			
+			#update buildings on a tile (need to do this for all non wall tiles every time)
+			if ct.is_tile_passable(pos):
+				self.walkable_board = self.set_bit(self.walkable_board, pos)
+			building_id = ct.get_tile_building_id(pos)
+			if building_id:
+				etype = ct.get_entity_type(building_id)
+				self.buildings_board= self.set_bit(self.buildings_board, pos)
+				if etype == EntityType.BRIDGE:
+					self.team_bridges_board = self.set_bit(self.team_bridges_board,pos)
 
 			#sym_x = (self.map_width - 1) - pos.x 
 			#sym_y = (self.map_height - 1) - pos.y 
@@ -216,6 +226,7 @@ class Bot:
 			# 	return True
 
 	def task_complete(self,ct:Controller):
+		print(f'Completed Task: {self.task['type']}, Data: {self.task['data']}')
 		if self.task_backlog:
 			self.task = self.task_backlog.pop(0)
 		else:
@@ -224,6 +235,15 @@ class Bot:
 class BuilderBot(Bot):
 	def __init__(self, ct:Controller, core_pos: Position, move_dir: Direction):
 		# Initialises the parent class (Bot) to generate the bit boards and inherit the corresponding variables and functions
+		
+		#must generate before calling super()
+		#most to least priority
+		priority_list = [BuilderTask.BUILD_BRIDGE, BuilderTask.FOUND_AX_ORE, BuilderTask.FOUND_TI_ORE, BuilderTask.FIND_ORE]
+		#generate lookup table for task priorities
+		self.task_priority = {}
+		for i in range(len(priority_list)):
+			self.task_priority[priority_list[i]] = i
+		
 		super().__init__(ct)
 		self.core_pos = core_pos
 		self.move_dir = move_dir
@@ -231,7 +251,7 @@ class BuilderBot(Bot):
 		self.conveying = False 
 		self.returning = False
 		#task 
-		self.task = {"type": BuilderTask.FIND_ORE, "data": None}
+		
 		# Bitboard for the buildings
 		self.buildings_board = 0
 		
@@ -243,8 +263,13 @@ class BuilderBot(Bot):
 		self.path_index = 0 # How far along the path we are
 		self.path_board = None # Bitboard representation of the path for parallel collision detection
 
-		self.task_priority = {BuilderTask.FIND_ORE: 0, BuilderTask.FOUND_ORE: 1, BuilderTask.BUILD_BRIDGE:2}
-		self.tasks_adjacent_aim = {BuilderTask.FIND_ORE: False, BuilderTask.FOUND_ORE:True, BuilderTask.BUILD_BRIDGE: True}
+		
+		#which tasks should aim adjacent to their target when path-finding
+		adjacent_tasks = [BuilderTask.FOUND_AX_ORE, BuilderTask.FOUND_TI_ORE, BuilderTask.BUILD_BRIDGE]
+		#generate aim adjacent lookup table
+		self.tasks_adjacent_aim = {}
+		for t in BuilderTask:
+			self.tasks_adjacent_aim[t] = t in adjacent_tasks
 
 	# Static so it can be alled through the class without needing to pass in self
 	@staticmethod
@@ -314,7 +339,7 @@ class BuilderBot(Bot):
 		neighbour_bit_mask<<=index
 		# shift to recenter bitmask on index - order is important, else we might delete part of the mask
 		neighbour_bit_mask >>= self.map_width*3 + 3
-		neighbours = (self.walkable_board|self.bridges_board|(~self.seen_board)) & neighbour_bit_mask
+		neighbours = (self.walkable_board|self.team_bridges_board|(~self.seen_board)) & neighbour_bit_mask
 		while neighbours:
 			(neighbours, nb) = self.pop_lsb(neighbours)
 			yield nb
@@ -422,9 +447,7 @@ class BuilderBot(Bot):
 		"""
 		Runs A* and stores the result as noth a position list and a path bitboard.
 		"""
-		print("computed", start, goal)
 		result = self.a_star(start, goal, False)
-		print(result)
 		if result is None:
 			self.path = []
 			self.path_index = 0
@@ -524,7 +547,7 @@ class BuilderBot(Bot):
 		return best_pos
 	
 	def turn_start(self, ct: Controller):
-		print(f'Task: {self.task['type']}, Data: {self.task['data']}')
+		print(f'Task: {self.task['type']}, Data: {self.task['data']}, Backlog: {self.task_backlog}')
 		# Update our map with any newly visible terrain
 		self.update_terrain_vision(ct)
 
@@ -570,11 +593,15 @@ class BuilderBot(Bot):
 		current_pos = ct.get_position()
 		reached_target = not self.target is None and current_pos.distance_squared(self.target) <=2
 		match self.task['type']:
+			case GenericTask.NOTHING:
+				self.add_task(BuilderTask.FIND_ORE, None)
+				self.task_complete(ct)
+				return True
 			# TODO: SEARCH for ORE - better search pattern
 			case BuilderTask.FIND_ORE:
 				ore_pos = self.find_nearest_ore(ct)
 				if ore_pos:
-					self.add_task(BuilderTask.FOUND_ORE, ore_pos)
+					
 					self.task_complete(ct)
 					return True
 				else:
@@ -582,7 +609,6 @@ class BuilderBot(Bot):
 					# TODO: use bug path finding?
 					# Build a road and step if we can.
 					next_pos = current_pos.add(self.move_dir)
-					print(f"shit path finding {self.check_bit(self.walls_board, next_pos)}")
 					if(0 <= next_pos.x < self.map_width and 0 <= next_pos.y < self.map_height and not self.check_bit(self.walls_board, next_pos)):
 						if (ct.get_action_cooldown() == 0 and ct.can_build_road(next_pos)):
 							ct.build_road(next_pos)
@@ -593,10 +619,13 @@ class BuilderBot(Bot):
 						# this is dog
 						# Hit a wall or map edge - rotate and try again next turn
 						self.move_dir = self.move_dir.rotate_right()
-			case BuilderTask.FOUND_ORE:
+			case BuilderTask.FOUND_AX_ORE | BuilderTask.FOUND_TI_ORE:
 				if self.target is None:
 					self.change_target(self.task['data'])
-				
+				if self.check_bit(self.buildings_board, self.target):
+					#TODO: if an ore is occupied by opposite team destroy it or something - need a team buildings board
+					self.task_complete(ct)
+					return True
 				if reached_target:
 					if ct.get_action_cooldown() == 0 and ct.can_build_harvester(self.target):
 						ct.build_harvester(self.target)
@@ -605,31 +634,50 @@ class BuilderBot(Bot):
 						# TODO: protect harvesters with walls around
 						# TODO: symmetry stuff
 						# TODO: patrol bots for conveyors - have a report time to core - if they are late send another patrol
-						core_dir_aim = [self.core_pos.add(d) for d in CARDINAL_DIRECTIONS]
-						core_dir_aim.sort(key=lambda dir: self.chebyshev(self.target, dir))
+						
 						all_dir = [self.target.add(d) for d in CARDINAL_DIRECTIONS]
 						all_dir.sort(key=lambda dir: self.chebyshev(self.target, dir))
 						for pos in all_dir:
 							if 0<=(pos.x)<self.map_width and 0<=pos.y<self.map_height and self.check_bit(self.walkable_board, pos):
 
-								self.add_task(BuilderTask.BUILD_BRIDGE, (pos, core_dir_aim[0]))
+								self.add_task(BuilderTask.BUILD_BRIDGE, pos)
 								break
 						self.task_complete(ct)
 						return True
 			case BuilderTask.BUILD_BRIDGE:
 				if not self.bridge_path or self.check_path_collisions(self.bridge_path, self.bridge_path_index):
-					self.compute_bridge_path(self.task['data'][0], self.task['data'][1])
+					bridge_start: Position = self.task['data']
+					core_dirs= [self.core_pos.add(d) for d in CARDINAL_DIRECTIONS]
+					best_dist = (self.map_height*self.map_width)**2
+					best_pos = Position(0,0)
+					for p in core_dirs:
+						dist = bridge_start.distance_squared(p)
+						if dist<best_dist:
+							best_dist=dist
+							best_pos=p
+					# TODO: need to make sure bridges dont get congested
+					# team_bridges = self.team_bridges_board
+					
+					# while (team_bridges):
+					# 	(team_bridges, pos) = self.pop_lsb(team_bridges)
+					# 	dist = bridge_start.distance_squared(pos)
+					# 	if dist<best_dist:
+					# 		best_dist=dist
+					# 		best_pos=pos
+					self.compute_bridge_path(bridge_start, best_pos)
 				
 					self.change_target(self.bridge_path[0])
 				if reached_target:
 					#get rid of roads in the way
 					building_id = ct.get_tile_building_id(self.target)
 					if building_id:
-						if ct.get_entity_type(building_id) == EntityType.ROAD and ct.can_destroy(self.target):
-							ct.destroy(self.target) # type: ignore
-						# elif ct.get_entity_type(building_id) == EntityType.BRIDGE:
-						# 	self.task_complete(ct)
-						# 	return True
+						etype = ct.get_entity_type(building_id)
+						if etype == EntityType.ROAD and ct.can_destroy(self.target):
+							ct.destroy(self.target)
+						# if we accidentally build on a team bridge we did good
+						elif etype == EntityType.BRIDGE and ct.get_team(building_id) == ct.get_team():
+							self.task_complete(ct)
+							return True
 
 					#try to build the bridge		
 					if ct.get_action_cooldown() == 0 and ct.can_build_bridge(self.target, self.bridge_path[self.bridge_path_index+1]):
