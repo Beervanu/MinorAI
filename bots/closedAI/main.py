@@ -653,7 +653,7 @@ class BuilderBot(Bot):
 						# TODO: protect harvesters with walls around
 						# TODO: symmetry stuff
 						# TODO: patrol bots for conveyors - have a report time to core - if they are late send another patrol
-						
+						# TODO: add path-finding around bots (probably need to place a marker)
 						all_dir = [self.target.add(d) for d in CARDINAL_DIRECTIONS]
 						all_dir.sort(key=lambda dir: self.chebyshev(self.target, dir))
 						for pos in all_dir:
