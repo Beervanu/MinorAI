@@ -22,8 +22,6 @@ class TaskData(TypedDict):
 	type: Task
 	data: Any
 
-
-
 class Player:
     def __init__(self):
         self.first_turn = True
@@ -67,6 +65,7 @@ class Bot:
 		self.team_buildings_board = 0
 		self.enemy_buildings_board = 0
 		self.team_bridges_board = 0
+		self.units_board = 0
 		
 		# 1 1 1
 		# 1 0 1 mask
@@ -169,14 +168,19 @@ class Bot:
 		return bitboard & ~(bitmask)
 
 	def update_terrain_vision(self, ct:Controller):
-		"""Called after moving to map newly revealed terrain."""  
+		"""Called after moving to map newly revealed terrain.""" 
 		# This acts as a way to fill in the dark areas of map memory.
+		print("Updating terrain vision")
+		self.units_board = 0
+		for id in ct.get_nearby_units():
+			if ct.get_entity_type(id) == EntityType.BUILDER_BOT or ct.get_team() != ct.get_team(id):
+				pos = ct.get_position(id)
+				if pos == ct.get_position():
+					continue
+				self.units_board = self.set_bit(self.units_board, ct.get_position(id))
+
 		for pos in ct.get_nearby_tiles():
-			# Skip if we have already mapped this tile
-			# This works as at this index the tile is either walkable or not walkable (Crazy right?)
-			# Hence the logical OR will always return 1 between the two boards
-			# And it is being logical ANDed with the bit mask which is guaranteed to be 1 at this position.
-			# In the case that this block has just entered the vision range both boards will be 0 and the logical OR will return 0.
+			# Skip if we have already mapped this tile as a wall (it cant change to anything else)
 			if self.check_bit(self.walls_board,pos):
 				continue
 			
@@ -247,6 +251,7 @@ class Bot:
 			self.task = self.task_backlog.pop(0)
 		else:
 			self.task = {'type':BuilderTask.FIND_ORE,'data': None}
+		print(f'New Task: {self.task['type']}, Data: {self.task['data']}')
 
 class BuilderBot(Bot):
 	def __init__(self, ct:Controller, core_pos: Position, move_dir: Direction):
@@ -314,7 +319,8 @@ class BuilderBot(Bot):
 		neighbour_bit_mask<<=index
 		# shift to recenter bitmask on index - order is important, else we might delete part of the mask
 		neighbour_bit_mask >>= self.map_width + 1
-		neighbours = (self.walkable_board|(~self.seen_board)) & neighbour_bit_mask
+		
+		neighbours = (self.walkable_board|(~self.seen_board)) & neighbour_bit_mask & (~self.units_board)
 		while neighbours:
 			(neighbours, nb) = self.pop_lsb(neighbours)
 			yield nb
@@ -412,7 +418,6 @@ class BuilderBot(Bot):
 			If you look above we pop the tile with the lowest f score then we add that tile to the closed set once again as we look through it's neighbours.
 			This means we always explore the tile with the lowest f score first and we never explore a tile more than once. Hence when we reach the target tile we have explored the optimal path to get there and we can reconstruct it using the came_from map.
 			"""
-				
 			closed_set.add(current)
 			for neighbour in neighbour_function(current):
 				if neighbour in closed_set:
@@ -510,8 +515,12 @@ class BuilderBot(Bot):
 
 		# AND with walls - non-zero, a wall is blocking the path
 		mask = self.walls_board
+		# if we are building a bridge, avoid enemy roads
 		if bridge:
 			mask |= self.enemy_buildings_board
+		#otherwise avoid our own units
+		else:
+			mask |= self.units_board
 		return (remaining_board & mask) != 0
 
 	def follow_path(self, ct: Controller) -> bool:
@@ -533,6 +542,7 @@ class BuilderBot(Bot):
 		# Take the step
 		if ct.can_move(direction):
 			ct.move(direction)
+			self.update_terrain_vision(ct)
 			self.path_index += 1
 			return True
 		
@@ -559,7 +569,6 @@ class BuilderBot(Bot):
 				if dist < best_dist:
 					best_dist = dist
 					best_pos = pos
-		
 		return best_pos
 	
 	def turn_start(self, ct: Controller):
@@ -570,7 +579,12 @@ class BuilderBot(Bot):
 		current_pos = ct.get_position()
 
 		keep_processing_tasks = True
+		too_many_loops = 0
 		while (keep_processing_tasks):
+			if too_many_loops>8:
+				print('too many loops')
+				break
+			too_many_loops+=1
 			if self.target is None:
 				keep_processing_tasks = self.process_tasks(ct)
 				continue
@@ -615,26 +629,22 @@ class BuilderBot(Bot):
 				return True
 			# TODO: SEARCH for ORE - better search pattern
 			case BuilderTask.FIND_ORE:
-				ore_pos = self.find_nearest_ore(ct)
-				if ore_pos:
-					
+				if self.task_backlog:
 					self.task_complete(ct)
 					return True
-				else:
-					# No ore visible - explore by moving in the bots assigned direction.
-					# TODO: use bug path finding?
-					# Build a road and step if we can.
-					next_pos = current_pos.add(self.move_dir)
-					if(0 <= next_pos.x < self.map_width and 0 <= next_pos.y < self.map_height and not self.check_bit(self.walls_board, next_pos)):
-						if (ct.get_action_cooldown() == 0 and ct.can_build_road(next_pos)):
-							ct.build_road(next_pos)
-						if ct.can_move(self.move_dir):
-							ct.move(self.move_dir)
+				# No ore visible - explore by moving in the bots assigned direction.
+				# Build a road and step if we can.
+				next_pos = current_pos.add(self.move_dir)
+				if(0 <= next_pos.x < self.map_width and 0 <= next_pos.y < self.map_height and not self.check_bit(self.walls_board, next_pos)):
+					if (ct.get_action_cooldown() == 0 and ct.can_build_road(next_pos)):
+						ct.build_road(next_pos)
+					if ct.can_move(self.move_dir):
+						ct.move(self.move_dir)
 
-					else:
-						# this is dog
-						# Hit a wall or map edge - rotate and try again next turn
-						self.move_dir = self.move_dir.rotate_right()
+				else:
+					# this is dog
+					# Hit a wall or map edge - rotate and try again next turn
+					self.move_dir = self.move_dir.rotate_right()
 			case BuilderTask.FOUND_AX_ORE | BuilderTask.FOUND_TI_ORE:
 				if self.target is None:
 					self.change_target(self.task['data'])
@@ -655,7 +665,7 @@ class BuilderBot(Bot):
 						# TODO: patrol bots for conveyors - have a report time to core - if they are late send another patrol
 						# TODO: add path-finding around bots (probably need to place a marker)
 						all_dir = [self.target.add(d) for d in CARDINAL_DIRECTIONS]
-						all_dir.sort(key=lambda dir: self.chebyshev(self.target, dir))
+						all_dir.sort(key=lambda dir: self.chebyshev(self.core_pos, dir))
 						for pos in all_dir:
 							if 0<=(pos.x)<self.map_width and 0<=pos.y<self.map_height and self.check_bit(self.walkable_board, pos):
 
