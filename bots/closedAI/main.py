@@ -64,7 +64,8 @@ class Bot:
 		self.axionite_ores_board = 0
 		self.titanium_ores_board = 0
 		self.walkable_board = 0
-		self.buildings_board = 0
+		self.team_buildings_board = 0
+		self.enemy_buildings_board = 0
 		self.team_bridges_board = 0
 		
 		# 1 1 1
@@ -107,6 +108,17 @@ class Bot:
 			mask+=arr[i]<<(self.map_width*i)
 		return mask
 
+	def closest_point(self, point:Position, arr:list[Position])->Position:
+		best_pos = None 
+		best_dist = float('inf')
+		for pos in arr:
+			dist = point.distance_squared(pos)
+			if dist< best_dist:
+				best_dist = dist
+				best_pos = pos
+		if not best_pos:
+			raise Exception('no closest point')
+		return best_pos
 
 	def pop_lsb(self, bitboard:int)-> tuple[int, Position]:
 		"""Gets the 1-lsb from a bitboard and then returns the bitboard with that bit set to 0 and the extracted position."""
@@ -191,9 +203,13 @@ class Bot:
 			building_id = ct.get_tile_building_id(pos)
 			if building_id:
 				etype = ct.get_entity_type(building_id)
-				self.buildings_board= self.set_bit(self.buildings_board, pos)
-				if etype == EntityType.BRIDGE:
-					self.team_bridges_board = self.set_bit(self.team_bridges_board,pos)
+				is_team: bool = ct.get_team() == ct.get_team(building_id)
+				if is_team:
+					self.team_buildings_board= self.set_bit(self.team_buildings_board, pos)
+					if etype == EntityType.BRIDGE:
+						self.team_bridges_board = self.set_bit(self.team_bridges_board,pos)
+				else:
+					self.enemy_buildings_board= self.set_bit(self.enemy_buildings_board, pos)
 
 			#sym_x = (self.map_width - 1) - pos.x 
 			#sym_y = (self.map_height - 1) - pos.y 
@@ -251,9 +267,6 @@ class BuilderBot(Bot):
 		self.conveying = False 
 		self.returning = False
 		#task 
-		
-		# Bitboard for the buildings
-		self.buildings_board = 0
 		
 		# The ordered list of positions and the corresponding bitboard
 		self.bridge_path = []
@@ -339,7 +352,7 @@ class BuilderBot(Bot):
 		neighbour_bit_mask<<=index
 		# shift to recenter bitmask on index - order is important, else we might delete part of the mask
 		neighbour_bit_mask >>= self.map_width*3 + 3
-		neighbours = (self.walkable_board|self.team_bridges_board|(~self.seen_board)) & neighbour_bit_mask
+		neighbours = (self.walkable_board|self.team_bridges_board|(~self.seen_board)) & neighbour_bit_mask & (~self.enemy_buildings_board)
 		while neighbours:
 			(neighbours, nb) = self.pop_lsb(neighbours)
 			yield nb
@@ -485,7 +498,7 @@ class BuilderBot(Bot):
 
 		return True
 
-	def check_path_collisions(self, path, index) -> bool:
+	def check_path_collisions(self, path, index, bridge=False) -> bool:
 		"""
 		Returns True if any obstacle now overlaps the remaining path.
 		"""
@@ -496,7 +509,10 @@ class BuilderBot(Bot):
 			remaining_board = self.set_bit(remaining_board, pos)
 
 		# AND with walls - non-zero, a wall is blocking the path
-		return (remaining_board & self.walls_board) != 0
+		mask = self.walls_board
+		if bridge:
+			mask |= self.enemy_buildings_board
+		return (remaining_board & mask) != 0
 
 	def follow_path(self, ct: Controller) -> bool:
 		""" Takes one step along the cached path. Returns True if a step was taken."""
@@ -622,7 +638,10 @@ class BuilderBot(Bot):
 			case BuilderTask.FOUND_AX_ORE | BuilderTask.FOUND_TI_ORE:
 				if self.target is None:
 					self.change_target(self.task['data'])
-				if self.check_bit(self.buildings_board, self.target):
+				if self.check_bit(self.team_buildings_board, self.target):
+					self.task_complete(ct)
+					return True
+				elif self.check_bit(self.enemy_buildings_board, self.target):
 					#TODO: if an ore is occupied by opposite team destroy it or something - need a team buildings board
 					self.task_complete(ct)
 					return True
@@ -645,16 +664,16 @@ class BuilderBot(Bot):
 						self.task_complete(ct)
 						return True
 			case BuilderTask.BUILD_BRIDGE:
-				if not self.bridge_path or self.check_path_collisions(self.bridge_path, self.bridge_path_index):
-					bridge_start: Position = self.task['data']
-					core_dirs= [self.core_pos.add(d) for d in CARDINAL_DIRECTIONS]
-					best_dist = (self.map_height*self.map_width)**2
-					best_pos = Position(0,0)
-					for p in core_dirs:
-						dist = bridge_start.distance_squared(p)
-						if dist<best_dist:
-							best_dist=dist
-							best_pos=p
+				
+				if not self.bridge_path or self.check_path_collisions(self.bridge_path, self.bridge_path_index, True):
+					#if this is our fi
+					if not self.bridge_path:
+						bridge_start: Position = self.task['data']
+					else:
+						# TODO: need logic to stop an error if we build a bridge that points initially to an empty space, then gets built over by an enemy bot
+						bridge_start = self.bridge_path[self.bridge_path_index]
+					core_dirs= [self.core_pos.add(d) for d in DIRECTIONS]
+					closest = self.closest_point(bridge_start, core_dirs)
 					# TODO: need to make sure bridges dont get congested
 					# team_bridges = self.team_bridges_board
 					
@@ -664,7 +683,7 @@ class BuilderBot(Bot):
 					# 	if dist<best_dist:
 					# 		best_dist=dist
 					# 		best_pos=pos
-					self.compute_bridge_path(bridge_start, best_pos)
+					self.compute_bridge_path(bridge_start, closest)
 				
 					self.change_target(self.bridge_path[0])
 				if reached_target:
@@ -676,6 +695,9 @@ class BuilderBot(Bot):
 							ct.destroy(self.target)
 						# if we accidentally build on a team bridge we did good
 						elif etype == EntityType.BRIDGE and ct.get_team(building_id) == ct.get_team():
+							self.task_complete(ct)
+							return True
+						elif etype == EntityType.CORE:
 							self.task_complete(ct)
 							return True
 
