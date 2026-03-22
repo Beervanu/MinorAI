@@ -8,6 +8,10 @@ import time
 # non-centre directions
 DIRECTIONS = [d for d in Direction if d != Direction.CENTRE]
 CARDINAL_DIRECTIONS = [Direction.NORTH, Direction.SOUTH, Direction.EAST, Direction.WEST]
+MESSAGE_TYPE = {
+	'MOVEMENT': 0,
+	'CORE_POS': 1
+}
 
 class GenericTask(Enum):
 	NOTHING = 'Nothing'
@@ -434,7 +438,10 @@ class BuilderBot(Bot):
 						h = max(0, self.chebyshev(neighbour, goal) - 1)
 					else:
 						h = self.chebyshev(neighbour, goal)
-
+					
+					#not a bridge building path and there is no road there
+					# if not bridge and not self.check_bit(self.team_buildings_board| self.enemy_buildings_board, neighbour):
+					# 	h+=0.5
 					f_score = tentative_g + h
 					counter += 1
 					heapq.heappush(open_set, (f_score, counter, neighbour))
