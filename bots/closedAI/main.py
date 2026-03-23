@@ -357,7 +357,6 @@ class BuilderBot(Bot):
 		self.tasks_adjacent_aim = {}
 		for t in BuilderTask:
 			self.tasks_adjacent_aim[t] = t in adjacent_tasks
-
 		if ct.get_current_round() >= 50:
 			self.add_task(BuilderTask.FIND_ENEMY_CORE, 0)
 			
