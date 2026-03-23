@@ -466,7 +466,7 @@ class BuilderBot(Bot):
 		came_from = {}
 
 		# g_score : The best known cost from start to each position
-		g_score = {start: 0}
+		g_score:dict[Position,float] = {start: 0}
 
 		# closed_set: position we have fully expanded
 		closed_set = set()
@@ -499,8 +499,11 @@ class BuilderBot(Bot):
 				if neighbour in closed_set:
 					continue
 				
-				 # Uniform cost of 1 per step for now
-				tentative_g = g_score[current] + 1
+				# Uniform cost of 1 per step for now
+				road_build_cost = 0
+				if not bridge and not self.check_bit(self.team_buildings_board| self.enemy_buildings_board, neighbour):
+					road_build_cost = 0.5
+				tentative_g = g_score[current] + 1 +road_build_cost
 				
 				# Checks if this path to the neighbour is better than any previously recorded path (or if there is no recorded path)
 				# The second argument is the default value if neighbour is not in g_score, which is infinity as we want to consider any path to it as better than no path.
@@ -516,9 +519,6 @@ class BuilderBot(Bot):
 					else:
 						h = self.chebyshev(neighbour, goal)
 					
-					#not a bridge building path and there is no road there
-					# if not bridge and not self.check_bit(self.team_buildings_board| self.enemy_buildings_board, neighbour):
-					# 	h+=0.5
 					f_score = tentative_g + h
 					counter += 1
 					heapq.heappush(open_set, (f_score, counter, neighbour))
@@ -573,7 +573,7 @@ class BuilderBot(Bot):
 			return False
 		
 		self.bridge_path =[start]+ result
-		self.path_index = 0
+		self.bridge_path_index = 0
 
 		# Build the path bitboard for collision detection later 
 		self.bridge_path_board = 0
@@ -666,7 +666,11 @@ class BuilderBot(Bot):
 		return enemy_core_pos
 	
 	def turn_start(self, ct: Controller):
-		print(f'Task: {self.task['type']}, Data: {self.task['data']}, Backlog: {self.task_backlog}')
+		print(f'Task: {self.task['type']}, Data: {self.task['data']}')
+		for i in range(len(self.task_backlog)):
+			t= self.task_backlog[i]
+			print('Backlog')
+			print(f'Task no. {i+1}: {t['type']}, Data: {t['data']}')
 		# Update our map with any newly visible terrain
 		self.update_terrain_vision(ct)
 
@@ -692,10 +696,16 @@ class BuilderBot(Bot):
 					self.follow_path(ct)
 			
 			keep_processing_tasks = self.process_tasks(ct)
-		print(f"Path: {self.path}")
+		print(f"Path: {self.path_string(self.path)}")
+		print(f'Bridge Path: {self.path_string(self.bridge_path)}')
 		if self.path:
 			self.draw_path(ct, self.path, self.path_index)
 			
+	def path_string(self, path: list[Position]):
+		s = ''
+		for pos in path:
+			s+=f'({pos.x}, {pos.y}) '
+		return s
 
 	def draw_path(self, ct:Controller, path, path_index, ):
 		increase = 50
@@ -724,7 +734,7 @@ class BuilderBot(Bot):
 				# Build a road and step if we can.
 
 				next_pos = current_pos.add(self.move_dir)
-				if(0 <= next_pos.x < self.map_width and 0 <= next_pos.y < self.map_height and not self.check_bit(self.walls_board, next_pos)):
+				if(0 <= next_pos.x < self.map_width and 0 <= next_pos.y < self.map_height and ct.can_build_road(next_pos)):
 					if (ct.get_action_cooldown() == 0 and ct.can_build_road(next_pos)):
 						ct.build_road(next_pos)
 					if ct.can_move(self.move_dir):
