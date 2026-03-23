@@ -518,7 +518,7 @@ class BuilderBot(Bot):
 						h = max(0, self.chebyshev(neighbour, goal) - 1)
 					else:
 						h = self.chebyshev(neighbour, goal)
-					
+
 					f_score = tentative_g + h
 					counter += 1
 					heapq.heappush(open_set, (f_score, counter, neighbour))
@@ -766,7 +766,7 @@ class BuilderBot(Bot):
 						all_dir = [self.target.add(d) for d in CARDINAL_DIRECTIONS]
 						all_dir.sort(key=lambda dir: self.chebyshev(self.core_pos, dir))
 						for pos in all_dir:
-							if 0<=(pos.x)<self.map_width and 0<=pos.y<self.map_height and self.check_bit(self.walkable_board, pos):
+							if 0<=(pos.x)<self.map_width and 0<=pos.y<self.map_height and self.check_bit(self.walkable_board, pos) and not self.check_bit(self.enemy_buildings_board, pos):
 
 								self.add_task(BuilderTask.BUILD_BRIDGE, pos)
 								break
