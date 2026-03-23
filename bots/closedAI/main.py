@@ -734,7 +734,7 @@ class BuilderBot(Bot):
 				# Build a road and step if we can.
 
 				next_pos = current_pos.add(self.move_dir)
-				if(0 <= next_pos.x < self.map_width and 0 <= next_pos.y < self.map_height and ct.can_build_road(next_pos)):
+				if(0 <= next_pos.x < self.map_width and 0 <= next_pos.y < self.map_height and (ct.can_build_road(next_pos) or ct.can_move(self.move_dir))):
 					if (ct.get_action_cooldown() == 0 and ct.can_build_road(next_pos)):
 						ct.build_road(next_pos)
 					if ct.can_move(self.move_dir):
