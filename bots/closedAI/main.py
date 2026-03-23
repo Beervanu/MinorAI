@@ -206,8 +206,8 @@ class Bot:
 						self.add_task(BuilderTask.FOUND_TI_ORE, pos)
 				elif env == Environment.ORE_AXIONITE:
 					self.axionite_ores_board = self.set_bit(self.axionite_ores_board,pos)
-					if isinstance(self, BuilderBot):
-						self.add_task(BuilderTask.FOUND_AX_ORE, pos)
+					# if isinstance(self, BuilderBot):
+					# 	self.add_task(BuilderTask.FOUND_AX_ORE, pos)
 				self.seen_board = self.set_bit(self.seen_board, pos)
 				
 			
@@ -724,6 +724,7 @@ class BuilderBot(Bot):
 					return True
 				# No ore visible - explore by moving in the bots assigned direction.
 				# Build a road and step if we can.
+				
 				next_pos = current_pos.add(self.move_dir)
 				if(0 <= next_pos.x < self.map_width and 0 <= next_pos.y < self.map_height and not self.check_bit(self.walls_board, next_pos)):
 					if (ct.get_action_cooldown() == 0 and ct.can_build_road(next_pos)):
