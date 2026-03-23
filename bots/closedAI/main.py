@@ -1,4 +1,4 @@
-from math import log2, floor, abs
+from math import log2, floor
 from typing import TypedDict, Any, Callable
 import heapq
 from enum import Enum
@@ -109,7 +109,7 @@ class Bot:
 		# Why use bit boards? Parallel queries. We can check if a tile is a wall by doing a single logical AND between the walls bitboard and a bitmask with a 1 at the index of the tile we want to query. This is much faster than querying the tile environment through the API every time we want to check if a tile is a wall.
 
 		# Run the map scan upon spawn
-		self._init_static_bitboards(ct)
+		self.update_terrain_vision(ct)
 		
 
 	def generate_mask(self, arr: list[int])->int:
@@ -139,10 +139,6 @@ class Bot:
 		# removes the bit we just processed
 		bitboard &= ~isolated_bit
 		return (bitboard, Position(index % self.map_width,floor(index/self.map_width)))
-
-	def _init_static_bitboards(self, ct: Controller):
-		"""shit ass function"""
-		self.update_terrain_vision(ct)
 	
 	def check_bit(self, bitboard:int, pos: Position) -> bool:
 		"""Returns True if the bit at th given position is 1."""
@@ -229,7 +225,9 @@ class Bot:
 				else:
 					self.enemy_buildings_board= self.set_bit(self.enemy_buildings_board, pos)
 
+		if self.map_symmetry == MapSymmetry.UNKNOWN:
 			self.check_symmetry()
+		print(f'Map Symmetry: {self.map_symmetry}')
 
 
 	def turn_start(self,ct):
@@ -286,44 +284,31 @@ class Bot:
 		for y in range(self.map_height):
 			row = (board >> (y * self.map_width)) & row_mask
 			reversed_row = int(bin(row)[2:].zfill(self.map_width), 2)
-			result |= reversed_row << (y * self.map_width)
+			result |= reversed_row << ((self.map_height - 1 - y) * self.map_width)
 		return result
 	
 	def check_symmetry(self) -> None:
 		"""Checks the symmetry of the map based on the currently seen terrain. Sets the map_symmetry variable accordingly."""
-		# Rotated symmetry check
-		rotated_seen = self.rotational_flip(self.seen_board)
-		both_seen = self.seen_board & rotated_seen
-		rotated_walls = self.rotational_flip(self.walls_board)
-		wall_diff = both_seen & (self.walls_board ^ rotated_walls)
-		rotated_ore = self.rotational_flip(self.axionite_ores_board | self.titanium_ores_board)
-		ore_diff = both_seen & ((self.axionite_ores_board | self.titanium_ores_board) ^ rotated_ore)
-		if (wall_diff | ore_diff) == 0 and both_seen != 0:
-			self.map_symmetry = MapSymmetry.ROTATIONAL
-			return
-		
-		# Reflection in Y axis symmetry check
-		x_flipped_seen = self.horizontal_flip(self.seen_board)
-		both_seen = self.seen_board & x_flipped_seen
-		x_flipped_walls = self.horizontal_flip(self.walls_board)
-		wall_diff = both_seen & (self.walls_board ^ x_flipped_walls)
-		x_flipped_ore = self.horizontal_flip(self.axionite_ores_board | self.titanium_ores_board)
-		ore_diff = both_seen & ((self.axionite_ores_board | self.titanium_ores_board) ^ x_flipped_ore)
-		if (wall_diff | ore_diff) == 0 and both_seen != 0:
-			self.map_symmetry = MapSymmetry.REFLECTION_Y
-			return
-		
-		# Reflection in X axis symmetry check
-		y_flipped_seen = self.vertical_flip(self.seen_board)
-		both_seen = self.seen_board & y_flipped_seen
-		y_flipped_walls = self.vertical_flip(self.walls_board)
-		wall_diff = both_seen & (self.walls_board ^ y_flipped_walls)
-		y_flipped_ore = self.vertical_flip(self.axionite_ores_board | self.titanium_ores_board)
-		ore_diff = both_seen & ((self.axionite_ores_board | self.titanium_ores_board) ^ y_flipped_ore)
-		if (wall_diff | ore_diff) == 0 and both_seen != 0:
-			self.map_symmetry = MapSymmetry.REFLECTION_X
-			return
-		return
+		features = self.walls_board | self.axionite_ores_board | self.titanium_ores_board
+		if features == 0:
+			return  # nothing to compare yet
+
+		checks = [
+			(MapSymmetry.ROTATIONAL,   self.rotational_flip),
+			(MapSymmetry.REFLECTION_Y, self.horizontal_flip),
+			(MapSymmetry.REFLECTION_X, self.vertical_flip),
+		]
+		possible = []
+		for sym, flip_fn in checks:
+			flipped_seen = flip_fn(self.seen_board)
+			both_seen    = self.seen_board & flipped_seen
+			wall_diff    = both_seen & (self.walls_board ^ flip_fn(self.walls_board))
+			ore_diff     = both_seen & (features ^ flip_fn(features))
+			if (wall_diff | ore_diff) == 0:
+				possible.append(sym)
+
+		if len(possible) == 1:
+			self.map_symmetry = possible[0]
 
 	def apply_symmetry(self, pos: Position) -> Position:
 		"""Applies the map symmetry to a given position to get the corresponding position on the other side of the map."""
@@ -374,7 +359,7 @@ class BuilderBot(Bot):
 			self.tasks_adjacent_aim[t] = t in adjacent_tasks
 
 		if ct.get_current_round() >= 50:
-			self.add_task(BuilderTask.FIND_ENEMY_CORE, None)
+			self.add_task(BuilderTask.FIND_ENEMY_CORE, 0)
 			
 	# Static so it can be alled through the class without needing to pass in self
 	@staticmethod
@@ -822,9 +807,7 @@ class BuilderBot(Bot):
 							return True
 						self.change_target(self.bridge_path[self.bridge_path_index])
 			case BuilderTask.FIND_ENEMY_CORE:
-				count = -1
 				if self.target is None:
-					count += 1
 					# Check if the enemy core is within visible range first
 					self.enemy_core_pos = self.find_enemy_core(ct)
 					if self.enemy_core_pos:
@@ -853,13 +836,14 @@ class BuilderBot(Bot):
 							Position(self.core_pos.x, self.map_height-1 - self.core_pos.y)]
 						
 						symmetry_positions.sort(key=lambda pos: self.chebyshev(current_pos, pos))
-						self.set_target(symmetry_positions[count])
+						self.change_target(symmetry_positions[self.task['data']])
 						return True
 				elif reached_target:	
 					# Getting to point implies that the core is not there, so we can move on to the next possible core position or repeat if we have checked all of them
 					if self.map_symmetry == MapSymmetry.UNKNOWN:
-						if count < 2:
-							self.set_target(None)
+						if self.task['data'] < 2:
+							self.task['data']+=1
+							self.change_target(None)
 							return True
 						else:
 							# We have checked all possible symmetry positions and have not found the enemy core - it's not looking good. Look for ore instead.
@@ -881,14 +865,14 @@ class BuilderBot(Bot):
 						self.add_task(BuilderTask.ATTACK_ENEMY_CORE, self.core_pos)
 						self.task_complete(ct)
 						return False
-					return True
+				return False
 			case BuilderTask.ATTACK_ENEMY_CORE:
 				# Hopefully this is not the case. 
 				if self.target is None:
-					self.apply_symmetry(self.core_pos)
+					self.enemy_core_pos = self.apply_symmetry(self.core_pos)
 					self.change_target(self.enemy_core_pos)
 					return True
-				return True
+				return False
 				
 				# Need to add logic to start destroying the core with turrets and stuff.
 		return False
