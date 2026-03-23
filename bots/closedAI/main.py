@@ -622,8 +622,8 @@ class BuilderBot(Bot):
 			ct.draw_indicator_dot(pos, col,col,col)
 
 	def process_tasks(self, ct:Controller):
-		self.target: Position
 		"""Processes the current task, returning True if we should continue processing"""
+		self.target: Position
 		current_pos = ct.get_position()
 		reached_target = not self.target is None and current_pos.distance_squared(self.target) <=2
 		match self.task['type']:
@@ -748,7 +748,6 @@ class BuilderBot(Bot):
 		self.reset_path()
 		self.target = target
 		
-
 class Core(Bot):
 	def __init__(self, ct: Controller):
 		super().__init__(ct)
