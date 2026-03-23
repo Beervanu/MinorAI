@@ -20,6 +20,7 @@ class BuilderTask(Enum):
 	FOUND_AX_ORE = 'FoundAxOre'
 	FIND_ENEMY_CORE = 'FindEnemyCore'
 	ATTACK_ENEMY_CORE = 'AttackEnemyCore'
+	FOUND_CORE = 'FoundCore'
 
 type Task = BuilderTask | GenericTask
 class TaskData(TypedDict):
@@ -224,6 +225,8 @@ class Bot:
 						self.team_bridges_board = self.set_bit(self.team_bridges_board,pos)
 				else:
 					self.enemy_buildings_board= self.set_bit(self.enemy_buildings_board, pos)
+					if etype == EntityType.CORE:
+						self.walkable_board = self.clear_bit(self.walkable_board, pos)
 
 		if self.map_symmetry == MapSymmetry.UNKNOWN:
 			self.check_symmetry()
@@ -328,7 +331,7 @@ class BuilderBot(Bot):
 		
 		#must generate before calling super()
 		#most to least priority
-		priority_list = [BuilderTask.ATTACK_ENEMY_CORE,BuilderTask.FIND_ENEMY_CORE,BuilderTask.BUILD_BRIDGE, BuilderTask.FOUND_AX_ORE, BuilderTask.FOUND_TI_ORE, BuilderTask.FIND_ORE]
+		priority_list = [BuilderTask.ATTACK_ENEMY_CORE, BuilderTask.FOUND_CORE, BuilderTask.FIND_ENEMY_CORE,BuilderTask.BUILD_BRIDGE, BuilderTask.FOUND_AX_ORE, BuilderTask.FOUND_TI_ORE, BuilderTask.FIND_ORE]
 		#generate lookup table for task priorities
 		self.task_priority = {}
 		for i in range(len(priority_list)):
@@ -338,7 +341,8 @@ class BuilderBot(Bot):
 		self.core_pos = core_pos
 		self.enemy_core_pos = None
 		self.move_dir = move_dir
-		self.target = None 
+		self.target = None
+		self.target_radius = 2
 		self.conveying = False 
 		self.returning = False
 		#task 
@@ -353,7 +357,7 @@ class BuilderBot(Bot):
 
 		
 		#which tasks should aim adjacent to their target when path-finding
-		adjacent_tasks = [BuilderTask.ATTACK_ENEMY_CORE, BuilderTask.FIND_ENEMY_CORE, BuilderTask.FOUND_AX_ORE, BuilderTask.FOUND_TI_ORE, BuilderTask.BUILD_BRIDGE]
+		adjacent_tasks = [BuilderTask.FOUND_CORE, BuilderTask.FIND_ENEMY_CORE, BuilderTask.FOUND_AX_ORE, BuilderTask.FOUND_TI_ORE, BuilderTask.BUILD_BRIDGE]
 		#generate aim adjacent lookup table
 		self.tasks_adjacent_aim = {}
 		for t in BuilderTask:
@@ -666,15 +670,9 @@ class BuilderBot(Bot):
 		# Update our map with any newly visible terrain
 		self.update_terrain_vision(ct)
 
-		current_pos = ct.get_position()
-
 		keep_processing_tasks = True
-		too_many_loops = 0
 		while (keep_processing_tasks):
-			if too_many_loops>8:
-				print('too many loops')
-				break
-			too_many_loops+=1
+			current_pos = ct.get_position()
 			if self.target is None:
 				keep_processing_tasks = self.process_tasks(ct)
 				continue
@@ -711,7 +709,7 @@ class BuilderBot(Bot):
 		"""Processes the current task, returning True if we should continue processing"""
 		self.target: Position
 		current_pos = ct.get_position()
-		reached_target = not self.target is None and current_pos.distance_squared(self.target) <=2
+		reached_target = not self.target is None and current_pos.distance_squared(self.target) <=self.target_radius
 		match self.task['type']:
 			case GenericTask.NOTHING:
 				self.add_task(BuilderTask.FIND_ORE, None)
@@ -724,7 +722,7 @@ class BuilderBot(Bot):
 					return True
 				# No ore visible - explore by moving in the bots assigned direction.
 				# Build a road and step if we can.
-				
+
 				next_pos = current_pos.add(self.move_dir)
 				if(0 <= next_pos.x < self.map_width and 0 <= next_pos.y < self.map_height and not self.check_bit(self.walls_board, next_pos)):
 					if (ct.get_action_cooldown() == 0 and ct.can_build_road(next_pos)):
@@ -854,31 +852,35 @@ class BuilderBot(Bot):
 						else:
 							# We have checked all possible symmetry positions and have not found the enemy core - it's not looking good. Look for ore instead.
 							self.task_complete(ct)
-							return False
 					# We have reached one of the possible symmetry positions and the core is not there but we have ascertained the symmetry of the map, so we can deduce the position of the enemy core based on our core position and the map symmetry and switch to attack task
 					else:
 						self.enemy_core_pos = self.apply_symmetry(self.core_pos)
-						self.change_target(self.enemy_core_pos)
 						self.add_task(BuilderTask.ATTACK_ENEMY_CORE, self.core_pos)
 						self.task_complete(ct)
-						return False
 				else:
 					# Still trying to reach the target to check for the core, keep processing this task but also check for symmetry as we go to potentially speed up the process
 					if self.map_symmetry != MapSymmetry.UNKNOWN:
 						# We have ascertained the symmetry of the map, so we can deduce the position of the enemy core based on our core position and the map symmetry and switch to attack task
 						self.enemy_core_pos = self.apply_symmetry(self.core_pos)
-						self.change_target(self.enemy_core_pos)
-						self.add_task(BuilderTask.ATTACK_ENEMY_CORE, self.core_pos)
+						self.add_task(BuilderTask.FOUND_CORE, None)
 						self.task_complete(ct)
-						return False
-				return False
-			case BuilderTask.ATTACK_ENEMY_CORE:
-				# Hopefully this is not the case. 
+			case BuilderTask.FOUND_CORE:
 				if self.target is None:
-					self.enemy_core_pos = self.apply_symmetry(self.core_pos)
-					self.change_target(self.enemy_core_pos)
+					self.change_target(self.enemy_core_pos, 9)
 					return True
-				return False
+				if reached_target:
+					self.add_task(BuilderTask.ATTACK_ENEMY_CORE, None)
+					self.task_complete(ct)
+					return True
+			case BuilderTask.ATTACK_ENEMY_CORE:
+				if self.target is None:
+					for id in ct.get_nearby_buildings():
+						etype = ct.get_entity_type(id)
+						if etype == EntityType.BRIDGE and ct.get_team(id) != ct.get_team():
+							self.change_target(ct.get_position(id), 0)
+							return True
+				if reached_target:
+					ct.self_destruct()
 				
 				# Need to add logic to start destroying the core with turrets and stuff.
 		return False
@@ -902,9 +904,10 @@ class BuilderBot(Bot):
 		self.bridge_path_index =0
 		self.bridge_path_board =0
 	
-	def change_target(self, target:Position):
+	def change_target(self, target:Position, radius=2):
 		self.reset_path()
 		self.target = target
+		self.target_radius = radius
 		
 class Core(Bot):
 	def __init__(self, ct: Controller):
@@ -920,7 +923,8 @@ class Core(Bot):
 			if ct.can_spawn(spawn_pos):
 				ct.spawn_builder(spawn_pos)
 				self.num_spawned += 1
-		if ct.get_current_round() == 50:
+		round = ct.get_current_round()
+		if  round >= 50 and not round %500:
 			# Spawn a bot with the find bot task to start scouting for ore and the enemy core
 			spawn_pos = ct.get_position().add(self.spawn_d)
 			if ct.can_spawn(spawn_pos):
