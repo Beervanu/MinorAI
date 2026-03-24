@@ -469,7 +469,6 @@ class BuilderBot(Bot):
 
 		# closed_set: position we have fully expanded
 		closed_set = set()
-		print(f'Goal: {goal.x} {goal.y}')
 		while open_set:
 			f, _, current = heapq.heappop(open_set)
 
@@ -602,9 +601,6 @@ class BuilderBot(Bot):
 		mask |= self.titanium_ores_board | self.axionite_ores_board
 		#avoid any units
 		mask |= self.units_board
-		if bridge:
-			print(f'R: {self.board_string(remaining_board)}')
-			print(f"Masked : {self.board_string(mask& remaining_board)}")
 		return (remaining_board & mask) != 0
 
 	def board_string(self, board:int)->str:
@@ -822,7 +818,6 @@ class BuilderBot(Bot):
 							ct.destroy(current_pos)
 						bridge_start = current_pos
 						
-					print('regenerate bridge path')
 					core_dirs= [self.core_pos.add(d) for d in DIRECTIONS]
 					core_dirs.sort(key=lambda pos: abs(bridge_start.x-pos.x)+abs(bridge_start.y -pos.y))
 					for pos in core_dirs:
@@ -832,7 +827,7 @@ class BuilderBot(Bot):
 							self.change_target(self.bridge_path[0], 2)
 							return True
 
-					print("failed to build a bridge")
+					print("failed to build a bridge?")
 					self.task_complete(ct)
 					return False
 				if reached_target:
@@ -895,7 +890,6 @@ class BuilderBot(Bot):
 										self.change_target(None)
 										return True
 						self.conveyor_path = []
-						print(f'try build at {self.target}')
 						#if we failed building conveyors, try to build a bridge instead
 						if ct.can_build_bridge(self.target, next_bridge_point):
 							ct.build_bridge(self.target, next_bridge_point)
@@ -910,8 +904,6 @@ class BuilderBot(Bot):
 				#happens if we are building conveyors between bridgepoints since we turn off normal pathfinding
 				elif self.target is None:
 					if self.check_path_collisions(self.conveyor_path, 0, True):
-						print('conveyor collision')
-						print(self.path_string(self.conveyor_path))
 						# we should be standing on a conveyor so destroy it and try building a bridge from here
 						if ct.can_destroy(current_pos):
 							ct.destroy(current_pos)
