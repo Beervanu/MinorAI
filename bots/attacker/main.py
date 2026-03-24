@@ -889,6 +889,13 @@ class BuilderBot(Bot):
 						# We have ascertained the symmetry of the map, so we can deduce the position of the enemy core based on our core position and the map symmetry and switch to attack task
 						self.enemy_core_pos = self.apply_symmetry(self.core_pos)
 						self.add_task(BuilderTask.FOUND_CORE, None)
+
+						# This updates my internal memory of the map symmetry, attached to the round I discovered it
+						# Will be able to overwrite the core's marker system
+
+						self.central_marker_data.b.date = ct.get_current_round
+						self.central_marker_data.b.known_map_symmetry = self.map_symmetry
+
 						self.task_complete(ct)
 			case BuilderTask.FOUND_CORE:
 				if self.target is None:
