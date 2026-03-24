@@ -179,13 +179,14 @@ class Bot:
 		"""Called after moving to map newly revealed terrain.""" 
 		# This acts as a way to fill in the dark areas of map memory.
 		print("Updating terrain vision")
+		
 		self.units_board = 0
 		for id in ct.get_nearby_units():
-			if ct.get_entity_type(id) == EntityType.BUILDER_BOT or ct.get_team() != ct.get_team(id):
+			if ct.get_entity_type(id) == EntityType.BUILDER_BOT:
 				pos = ct.get_position(id)
 				if pos == ct.get_position():
 					continue
-				self.units_board = self.set_bit(self.units_board, ct.get_position(id))
+				self.units_board = self.set_bit(self.units_board, pos)
 
 		for pos in ct.get_nearby_tiles():
 			# Skip if we have already mapped this tile as a wall (it cant change to anything else)
@@ -211,7 +212,7 @@ class Bot:
 				
 			
 			#update buildings on a tile (need to do this for all non wall tiles every time)
-			if ct.is_tile_passable(pos) or ct.is_tile_empty(pos):
+			if ct.is_tile_passable(pos) or env == Environment.EMPTY:
 				self.walkable_board = self.set_bit(self.walkable_board, pos)
 			else:
 				self.walkable_board = self.clear_bit(self.walkable_board, pos)
@@ -225,6 +226,8 @@ class Bot:
 						self.team_bridges_board = self.set_bit(self.team_bridges_board,pos)
 				else:
 					self.enemy_buildings_board= self.set_bit(self.enemy_buildings_board, pos)
+
+		
 
 		if self.map_symmetry == MapSymmetry.UNKNOWN:
 			self.check_symmetry()
@@ -430,7 +433,7 @@ class BuilderBot(Bot):
 		neighbour_bit_mask<<=index
 		# shift to recenter bitmask on index - order is important, else we might delete part of the mask
 		neighbour_bit_mask >>= self.map_width*3 + 3
-		neighbours = (self.walkable_board|self.team_bridges_board|(~self.seen_board)) & neighbour_bit_mask & (~self.enemy_buildings_board)
+		neighbours = (self.walkable_board|self.team_bridges_board|(~self.seen_board)) & neighbour_bit_mask & (~self.enemy_buildings_board) & (~self.units_board)
 		while neighbours:
 			(neighbours, nb) = self.pop_lsb(neighbours)
 			yield nb
@@ -593,8 +596,8 @@ class BuilderBot(Bot):
 		# if we are building a bridge, avoid enemy roads
 		if bridge:
 			mask |= self.enemy_buildings_board
-			mask |= self.titanium_ores_board | self.axionite_ores_board
-		#avoid our own units
+		mask |= self.titanium_ores_board | self.axionite_ores_board
+		#avoid any units
 		mask |= self.units_board
 		return (remaining_board & mask) != 0
 
@@ -663,9 +666,9 @@ class BuilderBot(Bot):
 	
 	def turn_start(self, ct: Controller):
 		print(f'Task: {self.task['type']}, Data: {self.task['data']}')
-		for i in range(len(self.task_backlog)):
-			t= self.task_backlog[i]
-			print(f'Qd Task no. {i+1}: {t['type']}, Data: {t['data']}')
+		# for i in range(len(self.task_backlog)):
+		# 	t= self.task_backlog[i]
+		# 	print(f'Qd Task no. {i+1}: {t['type']}, Data: {t['data']}')
 		# Update our map with any newly visible terrain
 		self.update_terrain_vision(ct)
 
@@ -691,6 +694,7 @@ class BuilderBot(Bot):
 					self.follow_path(ct)
 			
 			keep_processing_tasks = self.process_tasks(ct)
+		print(f'Current Target: {self.target}')
 		print(f"Path: {self.path_string(self.path)}")
 		print(f'Bridge Path: {self.path_string(self.bridge_path)}')
 		print(f'Conveyor Path: {self.path_string(self.conveyor_path)}')
@@ -710,6 +714,10 @@ class BuilderBot(Bot):
 			col-=increase
 			col = max(col, 0)
 			ct.draw_indicator_dot(pos, col,col,col)
+
+	def is_valid_position(self, pos:Position)->bool:
+		"""Returns true if in map bounds"""
+		return 0<=pos.x<self.map_width and 0<=pos.y<self.map_height
 
 	def process_tasks(self, ct:Controller):
 		"""Processes the current task, returning True if we should continue processing"""
@@ -747,23 +755,29 @@ class BuilderBot(Bot):
 				if self.check_bit(self.team_buildings_board, self.target):
 					self.task_complete(ct)
 					return True
-				elif self.check_bit(self.enemy_buildings_board, self.target):
-					#TODO: if an ore is occupied by opposite team destroy it or something - need a team buildings board
-					self.task_complete(ct)
-					return True
 				if reached_target:
-					if ct.get_action_cooldown() == 0 and ct.can_build_harvester(self.target):
-						ct.build_harvester(self.target)
-						# TODO: Choose a direction from which to build a bridge from properly - this will error when we try to build from an ore on the top of the map
+					if ct.get_action_cooldown() == 0:
+						if ct.can_build_harvester(self.target):
+							ct.build_harvester(self.target)
+						elif not self.check_bit(self.enemy_buildings_board, self.target):
+							return False
+						else:
+							# check no one else has already built a conveyor from this ore
+							for dir in CARDINAL_DIRECTIONS:
+								check_pos = self.target.add(dir)
+								if not self.is_valid_position(check_pos):
+									continue
+								#TODO: change to bitboards
+								building_id = ct.get_tile_building_id(check_pos)
+								if building_id and ct.get_team() == ct.get_team(building_id) and ct.get_entity_type(building_id) in CONVEYOR_ENTITIES:
+									self.task_complete(ct)
+									return True
+
 						# TODO: build to nearest bridge instead of core - (check if bridge gets congested) - second task to decongest bridges ?
-						# TODO: protect harvesters with walls around
-						# TODO: symmetry stuff
-						# TODO: patrol bots for conveyors - have a report time to core - if they are late send another patrol
-						# TODO: add path-finding around bots (probably need to place a marker)
 						all_dir = [self.target.add(d) for d in CARDINAL_DIRECTIONS]
 						all_dir.sort(key=lambda dir: self.chebyshev(self.core_pos, dir))
 						for pos in all_dir:
-							if 0<=(pos.x)<self.map_width and 0<=pos.y<self.map_height and self.check_bit(self.walkable_board, pos) and not self.check_bit(self.enemy_buildings_board, pos):
+							if self.is_valid_position(pos) and self.check_bit(self.walkable_board, pos) and not self.check_bit(self.enemy_buildings_board, pos):
 
 								self.add_task(BuilderTask.BUILD_BRIDGE, pos)
 								break
@@ -783,6 +797,7 @@ class BuilderBot(Bot):
 						if ct.can_destroy(current_pos):
 							ct.destroy(current_pos)
 						bridge_start = current_pos
+					print('regenerate bridge path')
 					core_dirs= [self.core_pos.add(d) for d in DIRECTIONS]
 					closest = self.closest_point(bridge_start, core_dirs)
 					# TODO: need to make sure bridges dont get congested
@@ -825,7 +840,7 @@ class BuilderBot(Bot):
 								case -1:
 									y_dir = Direction.NORTH
 						
-
+						print('look for conveyor path')
 						current_pos = self.target
 						self.conveyor_path = [self.target]
 						for i in range(self.chebyshev(next_bridge_point, self.target)):
@@ -837,15 +852,20 @@ class BuilderBot(Bot):
 							
 							for dir in check_directions:
 								check_pos =current_pos.add(dir)
+								if not self.is_valid_position(check_pos):
+									continue
+
 								if self.check_bit(self.walkable_board & ~(self.axionite_ores_board|self.titanium_ores_board|self.enemy_buildings_board), check_pos):
 									self.conveyor_path.append(check_pos)
 									current_pos = check_pos
 									#if we are able to build a full conveyor to the next point
 									if current_pos == next_bridge_point:
+										print(self.path_string(self.conveyor_path))
 										#turn off normal path finding
 										self.change_target(None)
 										return True
 						self.conveyor_path = []
+						print(f'try build at {self.target}')
 						#if we failed building conveyors, try to build a bridge instead
 						if ct.can_build_bridge(self.target, next_bridge_point):
 							ct.build_bridge(self.target, next_bridge_point)
