@@ -176,6 +176,19 @@ class Bot:
 		# Run the map scan upon spawn
 		self.update_terrain_vision(ct)
 		
+	def board_string(self, board:int)->str:
+		"""Returns the string of all positions with a 1 in the board. Used for debugging"""
+		pos_list = []
+		while (board):
+			(board, pos) = self.pop_lsb(board)
+			pos_list.append(pos)
+		return self.path_string(pos_list)
+
+	def path_string(self, path: list[Position]):
+		s = ''
+		for pos in path:
+			s+=f'({pos.x}, {pos.y}) '
+		return s
 
 	def generate_mask(self, arr: list[int])->int:
 		mask = 0
@@ -276,10 +289,13 @@ class Bot:
 				
 			
 			#update buildings on a tile (need to do this for all non wall tiles every time)
-			if ct.is_tile_passable(pos) or env == Environment.EMPTY:
+			#is it already passable or is it empty and there is no unit on it
+			if ct.is_tile_passable(pos) or (ct.is_tile_empty(pos) and not self.check_bit(self.units_board, pos)):
 				self.walkable_board = self.set_bit(self.walkable_board, pos)
 			else:
 				self.walkable_board = self.clear_bit(self.walkable_board, pos)
+			#add our own position to the walkable board so pathfinding isnt confused
+			self.walkable_board = self.set_bit(self.walkable_board, ct.get_position())
 			building_id = ct.get_tile_building_id(pos)
 			if building_id:
 				etype = ct.get_entity_type(building_id)
@@ -467,12 +483,6 @@ class BuilderBot(Bot):
 		self.path_board = None # Bitboard representation of the path for parallel collision detection
 		self.conveyor_path:list[Position] = []
 		
-		#which tasks should aim adjacent to their target when path-finding
-		adjacent_tasks = [BuilderTask.FOUND_CORE, BuilderTask.FIND_ENEMY_CORE, BuilderTask.FOUND_AX_ORE, BuilderTask.FOUND_TI_ORE, BuilderTask.BUILD_BRIDGE]
-		#generate aim adjacent lookup table
-		self.tasks_adjacent_aim = {}
-		for t in BuilderTask:
-			self.tasks_adjacent_aim[t] = t in adjacent_tasks
 		if ct.get_current_round() >= 50:
 			self.add_task(BuilderTask.FIND_ENEMY_CORE, 0)
 
@@ -535,7 +545,7 @@ class BuilderBot(Bot):
 		# shift to recenter bitmask on index - order is important, else we might delete part of the mask
 		neighbour_bit_mask >>= self.map_width + 1
 		
-		neighbours = (self.walkable_board|(~self.seen_board)) & neighbour_bit_mask & (~self.units_board)
+		neighbours = (self.walkable_board|(~self.seen_board)) & neighbour_bit_mask
 		while neighbours:
 			(neighbours, nb) = self.pop_lsb(neighbours)
 			yield nb
@@ -573,7 +583,7 @@ class BuilderBot(Bot):
 		neighbour_bit_mask<<=index
 		# shift to recenter bitmask on index - order is important, else we might delete part of the mask
 		neighbour_bit_mask >>= self.map_width*3 + 3
-		neighbours = (self.walkable_board|self.team_bridges_board|(~self.seen_board)) & neighbour_bit_mask & (~self.enemy_buildings_board) & (~self.units_board)
+		neighbours = (self.walkable_board|(~self.seen_board)) & neighbour_bit_mask & (~self.enemy_buildings_board) & ~(self.axionite_ores_board | self.titanium_ores_board)
 		while neighbours:
 			(neighbours, nb) = self.pop_lsb(neighbours)
 			yield nb
@@ -589,10 +599,6 @@ class BuilderBot(Bot):
 		neighbour_function = self.get_neighbours
 		if bridge:
 			neighbour_function = self.get_bridge_neighbours
-
-		# If we want to aim adjacent to our target
-		aim_adjacent = self.tasks_adjacent_aim[self.task['type']] and not bridge
-
 		# Open set: The ordered set of tiles yet to be explored.
 		# Priority queue of (f_score, tiebreaker, position) f score from the f(n) = g(n) + h(n) equation in the A* definition
 		# The tiebreaker (counter) prevent Position comparison when f_scores are equal (the first one will come first)
@@ -731,25 +737,15 @@ class BuilderBot(Bot):
 			remaining_board = self.set_bit(remaining_board, pos)
 
 		# mask away walls
-		mask = self.walls_board
+		mask = ~self.walkable_board
 		# if we are building a bridge, avoid enemy roads and the core
 		if bridge:
 			# since the last point in the bridge is our target, this could be the core or another bridge, we don't want to consider it for collisions
 			remaining_board = self.clear_bit(remaining_board, path[-1])
-			mask |= self.enemy_buildings_board
-			
-		mask |= self.titanium_ores_board | self.axionite_ores_board
+			# don't want to build a bridge over ore
+			mask |= self.titanium_ores_board | self.axionite_ores_board
 		#avoid any units
-		mask |= self.units_board
 		return (remaining_board & mask) != 0
-
-	def board_string(self, board:int)->str:
-		"""Returns the string of all positions with a 1 in the board. Used for debugging"""
-		pos_list = []
-		while (board):
-			(board, pos) = self.pop_lsb(board)
-			pos_list.append(pos)
-		return self.path_string(pos_list)
 
 	def follow_path(self, ct: Controller) -> bool:
 		""" Takes one step along the cached path. Returns True if a step was taken."""
@@ -815,6 +811,7 @@ class BuilderBot(Bot):
 		return enemy_core_pos
 	
 	def turn_start(self, ct: Controller):
+		print(self.board_string(self.walkable_board))
 		print(f'Task: {self.task['type']}, Data: {self.task['data']}')
 		# for i in range(len(self.task_backlog)):
 		# 	t= self.task_backlog[i]
@@ -850,12 +847,6 @@ class BuilderBot(Bot):
 		print(f'Conveyor Path: {self.path_string(self.conveyor_path)}')
 		if self.path:
 			self.draw_path(ct, self.path, self.path_index)
-			
-	def path_string(self, path: list[Position]):
-		s = ''
-		for pos in path:
-			s+=f'({pos.x}, {pos.y}) '
-		return s
 
 	def draw_path(self, ct:Controller, path, path_index, ):
 		increase = 50
@@ -903,8 +894,17 @@ class BuilderBot(Bot):
 					self.change_target(self.task['data'], 2)
 					return True
 				if self.check_bit(self.team_buildings_board, self.target):
-					self.task_complete(ct)
-					return True
+					#if there is a road built on top of the ore by us
+					if ct.get_entity_type(ct.get_tile_building_id(self.target)) == EntityType.ROAD:
+						#if we are near enough destroy it
+						if ct.can_destroy(self.target):
+							ct.destroy(self.target)
+						#else just wait until we reach it
+						else:
+							return False
+					else:
+						self.task_complete(ct)
+						return True
 				if reached_target:
 					if ct.get_action_cooldown() == 0:
 						if ct.can_build_harvester(self.target):
@@ -960,6 +960,7 @@ class BuilderBot(Bot):
 					core_dirs= [self.core_pos.add(d) for d in DIRECTIONS]
 					core_dirs.sort(key=lambda pos: abs(bridge_start.x-pos.x)+abs(bridge_start.y -pos.y))
 					for pos in core_dirs:
+						print()
 						if self.is_valid_position(pos) and self.check_bit(self.walkable_board, pos):
 							# TODO: need to make sure bridges dont get congested
 							self.compute_bridge_path(bridge_start, pos)
@@ -1004,31 +1005,33 @@ class BuilderBot(Bot):
 									y_dir = Direction.SOUTH
 								case -1:
 									y_dir = Direction.NORTH
-						
-						current_pos = self.target
-						self.conveyor_path = [self.target]
-						for i in range(self.chebyshev(next_bridge_point, self.target)):
-							check_directions = []
-							if next_bridge_point.y-self.target.y:
-								check_directions.append(y_dir)
-							if next_bridge_point.x-self.target.x:
-								check_directions.append(x_dir)
-							
-							for dir in check_directions:
-								check_pos =current_pos.add(dir)
-								if not self.is_valid_position(check_pos):
-									continue
+						#if we are going diagonal, skip building conveyors and just use a bridge
+						if not(abs(y_diff) == 2 and abs(x_diff)==2):
+							current_pos = self.target
+							self.conveyor_path = [self.target]
+							for i in range(self.chebyshev(next_bridge_point, self.target)):
+								check_directions = []
+								if next_bridge_point.y-self.target.y:
+									check_directions.append(y_dir)
+								if next_bridge_point.x-self.target.x:
+									check_directions.append(x_dir)
+								
+								for dir in check_directions:
+									check_pos =current_pos.add(dir)
+									if not self.is_valid_position(check_pos):
+										continue
 
-								if self.check_bit(self.walkable_board & ~(self.axionite_ores_board|self.titanium_ores_board|self.enemy_buildings_board), check_pos):
-									self.conveyor_path.append(check_pos)
-									current_pos = check_pos
-									#if we are able to build a full conveyor to the next point
-									if current_pos == next_bridge_point:
-										print(self.path_string(self.conveyor_path))
-										#turn off normal path finding
-										self.change_target(None)
-										return True
-						self.conveyor_path = []
+									if self.check_bit(self.walkable_board & ~(self.axionite_ores_board|self.titanium_ores_board|self.enemy_buildings_board), check_pos):
+										self.conveyor_path.append(check_pos)
+										current_pos = check_pos
+										#if we are able to build a full conveyor to the next point
+										if current_pos == next_bridge_point:
+											print(self.path_string(self.conveyor_path))
+											#turn off normal path finding
+											self.change_target(None)
+											return True
+							self.conveyor_path = []
+
 						#if we failed building conveyors, try to build a bridge instead
 						if ct.can_build_bridge(self.target, next_bridge_point):
 							ct.build_bridge(self.target, next_bridge_point)
@@ -1046,7 +1049,10 @@ class BuilderBot(Bot):
 						# we should be standing on a conveyor so destroy it and try building a bridge from here
 						if ct.can_destroy(current_pos):
 							ct.destroy(current_pos)
-						self.bridge_path.insert(self.bridge_path_index, current_pos)
+						if current_pos not in self.bridge_path:
+							self.bridge_path.insert(self.bridge_path_index, current_pos)
+						else:
+							raise Exception(self.path_string(self.conveyor_path))
 						self.change_target(current_pos,2)
 						return True
 					#continue building conveyors
@@ -1189,6 +1195,7 @@ class Core(Bot):
 		self.spawn_d = Direction.NORTH
 
 	def turn_start(self, ct: Controller):
+
 		if self.num_spawned < 4:
 			spawn_pos = ct.get_position().add(self.spawn_d)
 			# Rotate 90 degrees for the next spaw so that bots fan out
