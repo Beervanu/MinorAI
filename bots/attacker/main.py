@@ -258,6 +258,10 @@ class Bot:
 			self.check_symmetry()
 		print(f'Map Symmetry: {self.map_symmetry}')
 
+		for ent in ct.get_nearby_entities():
+			if ct.get_entity_type(ent) == EntityType.MARKER:
+				self.read_central_marker(ct, ent)
+
 
 	def turn_start(self,ct):
 		pass
@@ -350,6 +354,16 @@ class Bot:
 			return Position(pos.x, self.map_height - 1 - pos.y)
 		else:
 			raise Exception('Map symmetry unknown')	
+	
+	def read_central_marker(self, ct: Controller, entity):
+		read = CentralMarkerData()
+		read.as_int = ct.get_marker_value(entity)
+		if self.central_marker_data.b.date > read.b.date: 
+			# My one is newer - overwrite
+			ct.place_marker(ct.get_position(entity), self.central_marker_data.as_int)
+		elif self.central_marker_data.b.date < read.b.date:
+			# My one is older - replace internal data with this new one
+			self.central_marker_data.as_int = read.as_int
 
 class BuilderBot(Bot):
 	def __init__(self, ct:Controller, core_pos: Position, move_dir: Direction):
@@ -893,13 +907,13 @@ class BuilderBot(Bot):
 						# This updates my internal memory of the map symmetry, attached to the round I discovered it
 						# Will be able to overwrite the core's marker system
 
-						self.central_marker_data.b.date = ct.get_current_round
+						self.central_marker_data.b.date = ct.get_current_round()
 						self.central_marker_data.b.known_map_symmetry = self.map_symmetry
 
 						self.task_complete(ct)
 			case BuilderTask.FOUND_CORE:
 				if self.target is None:
-					self.change_target(self.enemy_core_pos, 9)
+					self.change_target(self.core_pos, 9)
 					return True
 				if reached_target:
 					self.add_task(BuilderTask.ATTACK_ENEMY_CORE, None)
@@ -975,12 +989,4 @@ class Core(Bot):
 						ct.place_marker(new_pos, self.central_marker_data.as_int)
 					elif ct.get_entity_type(entity) == EntityType.MARKER:
 						# Compare my internal central marker data with the existing marker
-						read = CentralMarkerData()
-						read.as_int = ct.get_marker_value(entity)
-						if self.central_marker_data.b.date > read.b.date: 
-							# My one is newer - overwrite
-							ct.place_marker(new_pos, self.central_marker_data.as_int)
-						elif self.central_marker_data.b.date < read.b.date:
-							# My one is older - replace internal data with this new one
-							self.central_marker_data.as_int = read.as_int
-							pass
+						self.read_central_marker(ct, entity)
