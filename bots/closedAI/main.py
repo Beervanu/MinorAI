@@ -21,6 +21,9 @@ class BuilderTask(Enum):
 	FIND_ENEMY_CORE = 'FindEnemyCore'
 	ATTACK_ENEMY_CORE = 'AttackEnemyCore'
 	FOUND_CORE = 'FoundCore'
+	FIND_HARVESTERS = 'FindHarvesters'
+	FOUND_HARVESTER = 'FoundHarvester'
+	FIX_GAPS = 'FixGaps'
 
 type Task = BuilderTask | GenericTask
 class TaskData(TypedDict):
@@ -76,8 +79,13 @@ class Bot:
 		self.team_buildings_board = 0
 		self.enemy_buildings_board = 0
 		self.team_bridges_board = 0
+		self.team_conveyors_board = 0
+		self.team_harvesters_board = 0
 		self.units_board = 0
-		
+		self.gaps_to_fix = heapq.heapify([])
+		self.last_tile = None
+		self.visited_harvesters = set()
+		self.friendly_harvesters = []
 		# 1 1 1
 		# 1 0 1 mask
 		# 1 1 1 
@@ -101,6 +109,12 @@ class Bot:
 		
 		self.bridge_neighbour_vertical_mask = self.generate_mask([0b1]*7)
 		self.bridge_neighbour_horizontal_mask = 0b1111111
+
+		left_column = ((1 << (self.map_width * self.map_height)) - 1) // ((1 << self.map_width) - 1)
+		right_column = left_column << (self.map_width - 1)
+		# Needed to delete the 1s that go beyond the left and right columns of the map in the flood fill used in the find_gaps function to prevent wrap around.
+		self.not_left_edge_mask = ~left_column
+		self.not_right_edge_mask = ~right_column
 
 		self.map_symmetry = MapSymmetry.UNKNOWN
 
@@ -223,6 +237,10 @@ class Bot:
 					self.team_buildings_board= self.set_bit(self.team_buildings_board, pos)
 					if etype == EntityType.BRIDGE:
 						self.team_bridges_board = self.set_bit(self.team_bridges_board,pos)
+					if etype == EntityType.CONVEYOR:
+						self.team_conveyors_board = self.set_bit(self.team_conveyors_board,pos)
+					if etype == EntityType.HARVESTER:
+						self.team_harvesters_board = self.set_bit(self.team_harvesters_board,pos)
 				else:
 					self.enemy_buildings_board= self.set_bit(self.enemy_buildings_board, pos)
 					if etype == EntityType.CORE:
@@ -331,7 +349,17 @@ class BuilderBot(Bot):
 		
 		#must generate before calling super()
 		#most to least priority
-		priority_list = [BuilderTask.ATTACK_ENEMY_CORE, BuilderTask.FOUND_CORE, BuilderTask.FIND_ENEMY_CORE,BuilderTask.BUILD_BRIDGE, BuilderTask.FOUND_AX_ORE, BuilderTask.FOUND_TI_ORE, BuilderTask.FIND_ORE]
+		priority_list = [
+			BuilderTask.ATTACK_ENEMY_CORE,
+			BuilderTask.FOUND_CORE,
+			BuilderTask.FIND_ENEMY_CORE,
+			BuilderTask.BUILD_BRIDGE,
+			BuilderTask.FOUND_AX_ORE,
+			BuilderTask.FOUND_TI_ORE,
+			BuilderTask.FOUND_HARVESTER,
+			BuilderTask.FIX_GAPS,
+			BuilderTask.FIND_ORE,
+			BuilderTask.FIND_HARVESTERS]
 		#generate lookup table for task priorities
 		self.task_priority = {}
 		for i in range(len(priority_list)):
@@ -357,13 +385,13 @@ class BuilderBot(Bot):
 
 		
 		#which tasks should aim adjacent to their target when path-finding
-		adjacent_tasks = [BuilderTask.FOUND_CORE, BuilderTask.FIND_ENEMY_CORE, BuilderTask.FOUND_AX_ORE, BuilderTask.FOUND_TI_ORE, BuilderTask.BUILD_BRIDGE]
+		adjacent_tasks = [BuilderTask.FIX_GAPS, BuilderTask.FOUND_HARVESTER, BuilderTask.FOUND_CORE, BuilderTask.FIND_ENEMY_CORE, BuilderTask.FOUND_AX_ORE, BuilderTask.FOUND_TI_ORE, BuilderTask.BUILD_BRIDGE]
 		#generate aim adjacent lookup table
 		self.tasks_adjacent_aim = {}
 		for t in BuilderTask:
 			self.tasks_adjacent_aim[t] = t in adjacent_tasks
 		if ct.get_current_round() >= 50:
-			self.add_task(BuilderTask.FIND_ENEMY_CORE, 0)
+			self.add_task(BuilderTask.FIND_HARVESTERS, 0)
 			
 	# Static so it can be alled through the class without needing to pass in self
 	@staticmethod
@@ -665,6 +693,57 @@ class BuilderBot(Bot):
 		
 		return enemy_core_pos
 	
+	def get_friendly_harvesters(self, ct: Controller):
+		"""Returrns a list of positions of friendly harvesters if there are any."""
+		found_harvesters = self.team_harvesters_board & self.seen_board
+		while found_harvesters:
+			(found_harvesters, pos) = self.pop_lsb(found_harvesters)
+			yield pos
+
+	def find_gaps(self, ct: Controller) -> heapq:
+		"""Finds gaps in the our bridge/conveyor network between the given harvester and the core using flood fill. The closest gap to the harvester is returned first."""
+		infrastructure_board = self.team_bridges_board | self.team_conveyors_board
+
+		# Start the flood fill from the core position
+		reached = 0
+		for d in Direction:
+			reached = self.set_bit(reached, self.core_pos.add(d))
+		
+		while True:
+			prev = reached
+			expanded = reached
+			# The following lines of code perform a parallel expansion of the reached area in all 8 directions using bit shifts. The edge masks are used to prevent wrap around when shifting.
+			# This mimicks the behaviour of water spreading from all the ones to the neighbours around the 1s.
+			# Think of the boarding being shifted in each direction then ORed adding ones in each of the compas directions. 
+			expanded |= (reached & self.not_left_edge_mask) << 1 # East
+			expanded |= (reached & self.not_right_edge_mask) >> 1 # West
+			expanded |= (reached << self.map_width) # South
+			expanded |= (reached >> self.map_width) # North
+			expanded |= (reached & self.not_left_edge_mask) << (self.map_width + 1) # Southeast
+			expanded |= (reached & self.not_right_edge_mask) >> (self.map_width + 1) # Northwest
+			expanded |= (reached & self.not_left_edge_mask) << (self.map_width - 1) # Southwest
+			expanded |= (reached & self.not_right_edge_mask) >> (self.map_width - 1) # Northeeast
+
+			# Then we constrain the expansion to only move through our existing infrastructure.
+			reached = prev | (expanded & infrastructure_board)
+
+			if reached == prev:
+				# No more expansion possible, we have reached all tiles connected to the core
+				break
+
+		# Disconnected = infrastructure we have seen but the fill didn't reach. And obviously we constrain it what the bot has actually seen
+		disconnected = infrastructure_board & ~reached & self.seen_board
+
+		# Extract the positions of the gaps and then sort them by distance.
+		gaps = []
+		while disconnected:
+			(disconnected, pos) = self.pop_lsb(disconnected)
+			heapq.heappush(gaps, (self.chebyshev(pos, ct.get_position()), pos))
+
+		return gaps
+
+
+
 	def turn_start(self, ct: Controller):
 		print(f'Task: {self.task['type']}, Data: {self.task['data']}')
 		for i in range(len(self.task_backlog)):
@@ -893,6 +972,63 @@ class BuilderBot(Bot):
 					ct.self_destruct()
 				
 				# Need to add logic to start destroying the core with turrets and stuff.
+			case BuilderTask.FIND_HARVESTERS:
+				if self.target is None:
+					self.friendly_harvesters = list(self.get_friendly_harvesters(ct))
+					if not self.friendly_harvesters:
+					# No friendly harvesters found, so follow a bridge or walk on a conveyor for now
+						for tile in ct.get_nearby_tiles():
+							pos = ct.get_position()
+							direction = pos.direction_to(tile)
+							direction_to_core = pos.direction_to(self.core_pos)
+							building_id = ct.get_tile_building_id(tile)
+							# I'm sorry for the long ahh if statement 😭. The tile needs to have a building id so that I can then query the building id to check that it is a bridge or conveyor
+							# Then I need to check that it is actually our teams building and then also check that it is not the tile we just came from.
+							# Then finally the long bit at the end is just checking if the infrastructure is moving in the direction of the core.
+							if building_id and ct.get_entity_type(building_id) == EntityType.BRIDGE and ct.get_team(building_id) == ct.get_team() and tile != self.last_tile:
+								bridge_target = ct.get_bridge_target(building_id)
+								target_direction = tile.direction_to(bridge_target)
+								if target_direction == direction_to_core:
+									self.change_target(tile, 1)
+									return True
+								
+							elif building_id and ct.get_entity_type(building_id) == EntityType.CONVEYOR and ct.get_team(building_id) == ct.get_team() and tile != self.last_tile and (ct.get_direction(building_id) in (direction_to_core, direction_to_core.rotate_left(), direction_to_core.rotate_right())):
+								if ct.can_move(direction):
+									ct.move(direction)
+									self.update_terrain_vision(ct)
+								return True
+					else: 
+						# Friendly harvesters found, set the target to the closest one and move towards it
+						self.friendly_harvesters.sort(key=lambda pos: self.chebyshev(pos, current_pos))
+						self.add_task(BuilderTask.FOUND_HARVESTER, None)
+						self.task_complete(ct)	
+			
+			case BuilderTask.FOUND_HARVESTER:
+				self.change_target(self.friendly_harvesters[0], 1)
+				if reached_target:
+					self.visited_harvesters.add(self.friendly_harvesters[0])
+					self.friendly_harvesters.pop(0)
+					self.task_complete(ct)
+					self.add_task(BuilderTask.FIX_GAPS, None)
+					return True
+				
+				# Still trying to reach the harvest so continue processing this task but also check if we can find any more friendly harvesters as we go.
+
+			case BuilderTask.FIX_GAPS:
+				# Iterate through the gaps in the heappq until it is empty.
+				self.gaps_to_fix = self.find_gaps(ct)
+				if not self.gaps_to_fix:
+					# No more gaps, task complete
+					self.task_complete(ct)
+					return True
+				if reached_target:
+					# We have reached the gap and now we have to determine what should go there.
+					pass
+				else:
+					# Get the closest gap and set it as the target
+					closest_gap = heapq.heappop(self.gaps_to_fix)
+					self.change_target(closest_gap, 1)
+					# Once we reach the gap we determine whether a conveyor or a bridge is needed to fill gap then add it.
 		return False
 	
 		
