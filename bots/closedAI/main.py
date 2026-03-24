@@ -907,12 +907,8 @@ class BuilderBot(Bot):
 						# we should be standing on a conveyor so destroy it and try building a bridge from here
 						if ct.can_destroy(current_pos):
 							ct.destroy(current_pos)
-							self.bridge_path.insert(self.bridge_path_index, current_pos)
-							self.change_target(current_pos,2)
-						#otherwise panic and end task so we dont get stuck
-						else:
-							print('panic -- this is bad tell jose')
-							self.task_complete(ct)
+						self.bridge_path.insert(self.bridge_path_index, current_pos)
+						self.change_target(current_pos,2)
 						return True
 					#continue building conveyors
 					build_at:Position = self.conveyor_path[0]
