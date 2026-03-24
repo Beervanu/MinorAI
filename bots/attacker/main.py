@@ -14,7 +14,7 @@ CARDINAL_DIRECTIONS = [Direction.NORTH, Direction.SOUTH, Direction.EAST, Directi
 class GenericTask(Enum):
 	NOTHING = 'Nothing'
 
-class BuilderTask(Enum):
+class BuilderTask(IntEnum):
 	FIND_ORE = 0
 	BUILD_BRIDGE = 1
 	FOUND_TI_ORE = 2
@@ -23,6 +23,7 @@ class BuilderTask(Enum):
 	GOTO_ENEMY_CORE = 5
 	ATTACK_ENEMY_CORE = 6
 	FOUND_CORE = 7
+DO_ONCE_TASKS = [BuilderTask.FOUND_TI_ORE, BuilderTask.FOUND_AX_ORE, BuilderTask.BUILD_BRIDGE]
 
 type Task = BuilderTask | GenericTask
 class TaskData(TypedDict):
@@ -61,11 +62,9 @@ class TaskMarkerBits(LittleEndianStructure):
 		# Bits 12-14
 		# used to check the task type
         ("task_type", c_uint32, 3),
-		# Bit 15 - if this task should only be done by one worker
-		("is_solo", c_uint32, 1),
 		# Bits 15-31
 		# used to identify a task
-		("task_identifier", c_uint32, 15)
+		("task_identifier", c_uint32, 16)
     ]
 
 class CentralMarkerBits(LittleEndianStructure):
@@ -129,7 +128,8 @@ class Bot:
 		self.map_height = ct.get_map_height()
 		self.task: TaskData = {'type': GenericTask.NOTHING, 'data': None, 'identifier': 0}
 		self.task_backlog: list[TaskData] = []
-		self.task_priority: dict[Task, int]	
+		self.task_priority: dict[Task, int]
+		self.done_tasks: list[TaskData] = []
 		# Initialisation of bitboards for different map features
 		self.seen_board = 0
 		self.walls_board = 0
@@ -284,14 +284,16 @@ class Bot:
 			if building_id:
 				etype = ct.get_entity_type(building_id)
 				is_team: bool = ct.get_team() == ct.get_team(building_id)
-				if is_team:
-					self.team_buildings_board= self.set_bit(self.team_buildings_board, pos)
-					if etype == EntityType.BRIDGE:
-						self.team_bridges_board = self.set_bit(self.team_bridges_board,pos)
-				else:
-					self.enemy_buildings_board= self.set_bit(self.enemy_buildings_board, pos)
-					if etype == EntityType.CORE:
-						self.walkable_board = self.clear_bit(self.walkable_board, pos)
+				if not etype == EntityType.MARKER:
+
+					if is_team:
+						self.team_buildings_board= self.set_bit(self.team_buildings_board, pos)
+						if etype == EntityType.BRIDGE:
+							self.team_bridges_board = self.set_bit(self.team_bridges_board,pos)
+					else:
+						self.enemy_buildings_board= self.set_bit(self.enemy_buildings_board, pos)
+						if etype == EntityType.CORE:
+							self.walkable_board = self.clear_bit(self.walkable_board, pos)
 
 		if self.map_symmetry == MapSymmetry.UNKNOWN:
 			self.check_symmetry()
@@ -300,7 +302,6 @@ class Bot:
 		for ent in ct.get_nearby_entities():
 			if ct.get_entity_type(ent) == EntityType.MARKER and ct.get_team() == ct.get_team(ent):
 				self.read_marker(ct, ent)
-				self.read_central_marker(ct, ent)
 
 
 	def turn_start(self,ct):
@@ -309,14 +310,24 @@ class Bot:
 	def turn_end(self, ct):
 		pass
 
-	def add_task(self, task: Task, data: Any)->bool:
-		"""Adds the given task, and decides whether to execute the task based on its priority. Returns True if we are switching to that task, False if not """
-		#if no task, switch to that task
+	def get_task_identifier(self, task:Task, data:Any):
 		identifier = 0
 		match task:
-			case BuilderTask.FOUND_AX_ORE | BuilderTask.FOUND_TI_ORE:
+			case BuilderTask.FOUND_AX_ORE | BuilderTask.FOUND_TI_ORE | BuilderTask.BUILD_BRIDGE:
 				identifier = data.y*self.map_width + data.x
 
+		return identifier
+
+	def add_task(self, task: Task, data: Any)->bool:
+		"""Adds the given task, and decides whether to execute the task based on its priority. Returns True if we are switching to that task, False if not """
+		# don't add this task if it has already been completed
+		identifier = self.get_task_identifier(task, data)
+		if task in DO_ONCE_TASKS:
+			for t in self.done_tasks:
+				if t['identifier'] == identifier:
+					return False
+		
+		#if no task, switch to that task
 		if not self.task:
 			self.task = {'type':task, 'data':data, 'identifier': identifier}
 			return True
@@ -333,7 +344,8 @@ class Bot:
 
 	def task_complete(self,ct:Controller):
 		print(f'Completed Task: {self.task['type']}, Data: {self.task['data']}')
-		self.done_tasks.append(self.task)
+		if self.task['type'] in DO_ONCE_TASKS:
+			self.done_tasks.append(self.task)
 		if self.task_backlog:
 			self.task = self.task_backlog.pop(0)
 		else:
@@ -405,9 +417,9 @@ class Bot:
 		read = MarkerData()
 		read.as_int =ct.get_marker_value(marker)
 		#Central marker
-		if read.type == 0:	
+		if read.b.type == 0:	
 			self.read_central_marker(ct, marker)
-		elif read.type == 1:
+		elif read.b.type == 1:
 			self.read_task_marker(ct, marker)
 		
 
@@ -459,7 +471,6 @@ class BuilderBot(Bot):
 		self.path = [] # List[Position] - ordered steps from current position to target
 		self.path_index = 0 # How far along the path we are
 		self.path_board = None # Bitboard representation of the path for parallel collision detection
-		self.own_markers_board = 0
 		
 		#which tasks should aim adjacent to their target when path-finding
 		adjacent_tasks = [BuilderTask.GOTO_ENEMY_CORE, BuilderTask.FOUND_CORE, BuilderTask.FIND_ENEMY_CORE, BuilderTask.FOUND_AX_ORE, BuilderTask.FOUND_TI_ORE, BuilderTask.BUILD_BRIDGE]
@@ -470,12 +481,15 @@ class BuilderBot(Bot):
 		if ct.get_current_round() >= 50:
 			self.add_task(BuilderTask.FIND_ENEMY_CORE, 0)
 			
+
+	
 	def read_task_marker(self, ct: Controller, entity):
 		read = TaskMarkerData()
 		read.as_int = ct.get_marker_value(entity)
 		if read.b.date == ct.get_current_round():
-			if read.b.task_type == self.task["type"] and read.b.is_solo and read.b.identifier == self.task["identifier"]:
+			if read.b.task_type == self.task["type"]and self.task["type"] in DO_ONCE_TASKS and read.b.task_identifier == self.task["identifier"]:
 				self.task_complete(ct)
+		
 			# new_tasks = []
 			# done_tasks = []
 			# for task in self.task_backlog:
@@ -485,9 +499,23 @@ class BuilderBot(Bot):
 			# 		new_tasks.append(task)
 			
 					
-			
+	def turn_end(self, ct:Controller):
+		write = TaskMarkerData()
+		write.b.type = 1
+		write.b.date = ct.get_current_round()
+		write.b.task_type = self.task['type']
+		write.b.task_identifier = self.task['identifier']
+		current_pos = ct.get_position()
+		for x in range(-1,2):
+			for y in range(-1,2):
+				check_pos = Position(current_pos.x+x, current_pos.y+y)
+				if ct.can_place_marker(check_pos):
+					ct.place_marker(check_pos, write.as_int)
+
 
 	
+
+
 	# Static so it can be alled through the class without needing to pass in self
 	@staticmethod
 	def chebyshev(a: Position, b: Position) -> int:
