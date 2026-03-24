@@ -39,14 +39,19 @@ class MapSymmetry(IntEnum):
 
 class CentralMarkerBits(LittleEndianStructure):
     _fields_ = [
-		# Bits 0-3
+		# Bits 0-11
+		# date
+		# When this information was last updated
+		("date", c_uint32, 12),
+		# Bits 12-15
+		# known_map_symmetry
 		# Once we have deduced the symmetry of the map, we put it here.
 		# Every bot that sees this will know to stop searching for the enemy core.
 		# Then we can coordinate attacks etc.
         ("known_map_symmetry", c_uint32, 4),
-		# Bits 4-31
+		# Bits 16-31
 		# Unused so far.
-        ("unused", c_uint32, 28)
+        ("unused", c_uint32, 16)
     ]
 
 class CentralMarkerData(Union):
@@ -122,6 +127,8 @@ class Bot:
 		self.bridge_neighbour_horizontal_mask = 0b1111111
 
 		self.map_symmetry = MapSymmetry.UNKNOWN
+
+		self.central_marker_data = CentralMarkerData()
 
 		# What's a bitboard you ask? Well look no further Motion has got you covered.
 		# Essentially we map every tile on the map to a index on a binary number
@@ -950,5 +957,23 @@ class Core(Bot):
 				ct.spawn_builder(spawn_pos)
 				self.num_spawned += 1
 
-
-
+		for x in range(-2, 3):
+			for y in range(-2, 3):
+				new_pos = Position(ct.get_position().x + x, ct.get_position().y + y)
+				if ct.can_place_marker(new_pos):
+					# First check if there's an existing marker
+					entity = ct.get_tile_building_id(new_pos)
+					if entity == None:
+						# Just put a blank one
+						ct.place_marker(new_pos, self.central_marker_data.as_int)
+					elif ct.get_entity_type(entity) == EntityType.MARKER:
+						# Compare my internal central marker data with the existing marker
+						read = CentralMarkerData()
+						read.as_int = ct.get_marker_value(entity)
+						if self.central_marker_data.b.date > read.b.date: 
+							# My one is newer - overwrite
+							ct.place_marker(new_pos, self.central_marker_data.as_int)
+						elif self.central_marker_data.b.date < read.b.date:
+							# My one is older - replace internal data with this new one
+							self.central_marker_data.as_int = read.as_int
+							pass
