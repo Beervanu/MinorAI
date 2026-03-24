@@ -20,6 +20,7 @@ class BuilderTask(Enum):
 	FOUND_TI_ORE = 'FoundTiOre'
 	FOUND_AX_ORE = 'FoundAxOre'
 	FIND_ENEMY_CORE = 'FindEnemyCore'
+	GOTO_ENEMY_CORE = 'GotoEnemyCore'
 	ATTACK_ENEMY_CORE = 'AttackEnemyCore'
 	FOUND_CORE = 'FoundCore'
 
@@ -357,13 +358,17 @@ class Bot:
 	
 	def read_central_marker(self, ct: Controller, entity):
 		read = CentralMarkerData()
-		read.as_int = ct.get_marker_value(entity)
-		if self.central_marker_data.b.date > read.b.date: 
-			# My one is newer - overwrite
-			ct.place_marker(ct.get_position(entity), self.central_marker_data.as_int)
-		elif self.central_marker_data.b.date < read.b.date:
-			# My one is older - replace internal data with this new one
-			self.central_marker_data.as_int = read.as_int
+		if ct.get_team(entity) == ct.get_team():
+			read.as_int = ct.get_marker_value(entity)
+			if self.central_marker_data.b.date > read.b.date: 
+				# My one is newer - overwrite
+				if ct.can_place_marker(ct.get_position(entity)):
+					ct.place_marker(ct.get_position(entity), self.central_marker_data.as_int)
+			elif self.central_marker_data.b.date < read.b.date:
+				# My one is older - replace internal data with this new one
+				self.central_marker_data.as_int = read.as_int
+
+				self.map_symmetry = self.central_marker_data.b.known_map_symmetry
 
 class BuilderBot(Bot):
 	def __init__(self, ct:Controller, core_pos: Position, move_dir: Direction):
@@ -371,7 +376,7 @@ class BuilderBot(Bot):
 		
 		#must generate before calling super()
 		#most to least priority
-		priority_list = [BuilderTask.ATTACK_ENEMY_CORE, BuilderTask.FOUND_CORE, BuilderTask.FIND_ENEMY_CORE,BuilderTask.BUILD_BRIDGE, BuilderTask.FOUND_AX_ORE, BuilderTask.FOUND_TI_ORE, BuilderTask.FIND_ORE]
+		priority_list = [BuilderTask.ATTACK_ENEMY_CORE, BuilderTask.GOTO_ENEMY_CORE, BuilderTask.FOUND_CORE, BuilderTask.FIND_ENEMY_CORE,BuilderTask.BUILD_BRIDGE, BuilderTask.FOUND_AX_ORE, BuilderTask.FOUND_TI_ORE, BuilderTask.FIND_ORE]
 		#generate lookup table for task priorities
 		self.task_priority = {}
 		for i in range(len(priority_list)):
@@ -397,7 +402,7 @@ class BuilderBot(Bot):
 
 		
 		#which tasks should aim adjacent to their target when path-finding
-		adjacent_tasks = [BuilderTask.FOUND_CORE, BuilderTask.FIND_ENEMY_CORE, BuilderTask.FOUND_AX_ORE, BuilderTask.FOUND_TI_ORE, BuilderTask.BUILD_BRIDGE]
+		adjacent_tasks = [BuilderTask.GOTO_ENEMY_CORE, BuilderTask.FOUND_CORE, BuilderTask.FIND_ENEMY_CORE, BuilderTask.FOUND_AX_ORE, BuilderTask.FOUND_TI_ORE, BuilderTask.BUILD_BRIDGE]
 		#generate aim adjacent lookup table
 		self.tasks_adjacent_aim = {}
 		for t in BuilderTask:
@@ -855,9 +860,9 @@ class BuilderBot(Bot):
 					# Check if the enemy core is within visible range first
 					self.enemy_core_pos = self.find_enemy_core(ct)
 					if self.enemy_core_pos:
-						# If it witnin visible range, set it as the target and switch to attack task
+						# If it witnin visible range, set it as the target and switch to report back to base
 						self.change_target(self.enemy_core_pos)
-						self.add_task(BuilderTask.ATTACK_ENEMY_CORE, self.core_pos)
+						self.add_task(BuilderTask.FOUND_CORE, self.core_pos)
 						self.task_complete(ct)
 						return True
 					else:
@@ -867,7 +872,7 @@ class BuilderBot(Bot):
 						if self.map_symmetry != MapSymmetry.UNKNOWN:
 							self.enemy_core_pos = self.apply_symmetry(self.core_pos)
 							self.change_target(self.enemy_core_pos)
-							self.add_task(BuilderTask.ATTACK_ENEMY_CORE, self.core_pos)
+							self.add_task(BuilderTask.GOTO_ENEMY_CORE, self.core_pos)
 							self.task_complete(ct)
 							return False
 						
@@ -895,7 +900,7 @@ class BuilderBot(Bot):
 					# We have reached one of the possible symmetry positions and the core is not there but we have ascertained the symmetry of the map, so we can deduce the position of the enemy core based on our core position and the map symmetry and switch to attack task
 					else:
 						self.enemy_core_pos = self.apply_symmetry(self.core_pos)
-						self.add_task(BuilderTask.ATTACK_ENEMY_CORE, self.core_pos)
+						self.add_task(BuilderTask.FOUND_CORE, self.core_pos)
 						self.task_complete(ct)
 				else:
 					# Still trying to reach the target to check for the core, keep processing this task but also check for symmetry as we go to potentially speed up the process
@@ -912,8 +917,18 @@ class BuilderBot(Bot):
 
 						self.task_complete(ct)
 			case BuilderTask.FOUND_CORE:
+				# FOUND_CORE is now the task which tells the bot to go back and update central markers
+				# The task for going to the enemy core to attack it is now GOTO_ENEMY_CORE and retains its functionality
 				if self.target is None:
 					self.change_target(self.core_pos, 9)
+					return True
+				if reached_target:
+					self.add_task(BuilderTask.GOTO_ENEMY_CORE, None)
+					self.task_complete(ct)
+					return True
+			case BuilderTask.GOTO_ENEMY_CORE:
+				if self.target is None:
+					self.change_target(self.enemy_core_pos, 3)
 					return True
 				if reached_target:
 					self.add_task(BuilderTask.ATTACK_ENEMY_CORE, None)
