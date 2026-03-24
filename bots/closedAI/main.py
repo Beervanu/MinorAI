@@ -1124,7 +1124,9 @@ class BuilderBot(Bot):
 						self.task_complete(ct)	
 			
 			case BuilderTask.FOUND_HARVESTER:
-				self.change_target(self.friendly_harvesters[0], 1)
+				if self.target is None:
+					self.change_target(self.friendly_harvesters[0], 2)
+					return True
 				if reached_target:
 					self.visited_harvesters.add(self.friendly_harvesters[0])
 					self.friendly_harvesters.pop(0)
@@ -1137,16 +1139,21 @@ class BuilderBot(Bot):
 			case BuilderTask.FIX_GAPS:
 				# Iterate through the gaps in the heappq until it is empty.
 				self.gaps_to_fix = self.find_gaps(ct)
+				print(f"Found {len(self.gaps_to_fix)} gaps to fix")
+				print(f"Gaps: {[pos for _, pos in self.gaps_to_fix]}")
 				if not self.gaps_to_fix:
 					# No more gaps, task complete
+					print("No more gaps to fix")
 					self.task_complete(ct)
 					return True
 				if reached_target:
 					# We have reached the gap and now we have to determine what should go there.
+					print(f"I found a gap at {self.target}")
+					print(f"{self.check_bit(self.team_bridges_board, self.target)}")
 					pass
 				else:
 					# Get the closest gap and set it as the target
-					closest_gap = heapq.heappop(self.gaps_to_fix)
+					_, closest_gap = heapq.heappop(self.gaps_to_fix)
 					self.change_target(closest_gap, 1)
 					# Once we reach the gap we determine whether a conveyor or a bridge is needed to fill gap then add it.
 		return False
