@@ -15,19 +15,20 @@ class GenericTask(Enum):
 	NOTHING = 'Nothing'
 
 class BuilderTask(Enum):
-	FIND_ORE = 'FindOre'
-	BUILD_BRIDGE = 'BuildBridge'
-	FOUND_TI_ORE = 'FoundTiOre'
-	FOUND_AX_ORE = 'FoundAxOre'
-	FIND_ENEMY_CORE = 'FindEnemyCore'
-	GOTO_ENEMY_CORE = 'GotoEnemyCore'
-	ATTACK_ENEMY_CORE = 'AttackEnemyCore'
-	FOUND_CORE = 'FoundCore'
+	FIND_ORE = 0
+	BUILD_BRIDGE = 1
+	FOUND_TI_ORE = 2
+	FOUND_AX_ORE = 3
+	FIND_ENEMY_CORE = 4
+	GOTO_ENEMY_CORE = 5
+	ATTACK_ENEMY_CORE = 6
+	FOUND_CORE = 7
 
 type Task = BuilderTask | GenericTask
 class TaskData(TypedDict):
 	type: Task
 	data: Any
+	identifier: int
 
 class MapSymmetry(IntEnum):
 	ROTATIONAL = 1
@@ -38,25 +39,62 @@ class MapSymmetry(IntEnum):
 # Ok so the central marker is the one that our core places on its top left at the start of the game
 # It will be used to hold key information, it's split into different fields
 
+class MarkerBits(LittleEndianStructure):
+	_fields_ = [
+		# To denote type
+		("type", c_uint32, 1),
+		# Bits 1-12
+		# date
+		# When this information was last updated
+		("date", c_uint32, 12),
+        ("unused", c_uint32, 19)
+    ]
+
+class TaskMarkerBits(LittleEndianStructure):
+    _fields_ = [
+		# To denote type, for a task marker = 1
+		("type", c_uint32, 1),
+		# Bits 1-12
+		# date
+		# When this information was last updated
+		("date", c_uint32, 12),
+		# Bits 12-14
+		# used to check the task type
+        ("task_type", c_uint32, 3),
+		# Bit 15 - if this task should only be done by one worker
+		("is_solo", c_uint32, 1),
+		# Bits 15-31
+		# used to identify a task
+		("task_identifier", c_uint32, 15)
+    ]
+
 class CentralMarkerBits(LittleEndianStructure):
     _fields_ = [
+		# To denote type, for a central marker = 0
+		("type", c_uint32, 1),
 		# Bits 0-11
 		# date
 		# When this information was last updated
 		("date", c_uint32, 12),
-		# Bits 12-15
+		# Bits 12-13
 		# known_map_symmetry
 		# Once we have deduced the symmetry of the map, we put it here.
 		# Every bot that sees this will know to stop searching for the enemy core.
 		# Then we can coordinate attacks etc.
-        ("known_map_symmetry", c_uint32, 4),
-		# Bits 16-31
+        ("known_map_symmetry", c_uint32, 2),
+		# Bits 14-31
 		# Unused so far.
-        ("unused", c_uint32, 16)
+        ("unused", c_uint32, 17)
     ]
 
-class CentralMarkerData(Union):
+class MarkerData(Union):
+	_fields_ = [("b", MarkerBits), ("as_int", c_uint32)]
+
+class CentralMarkerData(MarkerData):
     _fields_ = [("b", CentralMarkerBits), ("as_int", c_uint32)]
+
+class TaskMarkerData(Union):
+    _fields_ = [("b", TaskMarkerBits), ("as_int", c_uint32)]
 
 class Player:
     def __init__(self):
@@ -89,7 +127,7 @@ class Bot:
 		# Cache map dimensions gloabally for this unit
 		self.map_width = ct.get_map_width()
 		self.map_height = ct.get_map_height()
-		self.task: TaskData = {'type': GenericTask.NOTHING, 'data': None}
+		self.task: TaskData = {'type': GenericTask.NOTHING, 'data': None, 'identifier': 0}
 		self.task_backlog: list[TaskData] = []
 		self.task_priority: dict[Task, int]	
 		# Initialisation of bitboards for different map features
@@ -260,7 +298,8 @@ class Bot:
 		print(f'Map Symmetry: {self.map_symmetry}')
 
 		for ent in ct.get_nearby_entities():
-			if ct.get_entity_type(ent) == EntityType.MARKER:
+			if ct.get_entity_type(ent) == EntityType.MARKER and ct.get_team() == ct.get_team(ent):
+				self.read_marker(ct, ent)
 				self.read_central_marker(ct, ent)
 
 
@@ -270,14 +309,19 @@ class Bot:
 	def turn_end(self, ct):
 		pass
 
-	def add_task(self, task: Task, data: object)->bool:
+	def add_task(self, task: Task, data: Any)->bool:
 		"""Adds the given task, and decides whether to execute the task based on its priority. Returns True if we are switching to that task, False if not """
 		#if no task, switch to that task
+		identifier = 0
+		match task:
+			case BuilderTask.FOUND_AX_ORE | BuilderTask.FOUND_TI_ORE:
+				identifier = data.y*self.map_width + data.x
+
 		if not self.task:
-			self.task = {'type':task, 'data':data}
+			self.task = {'type':task, 'data':data, 'identifier': identifier}
 			return True
 		# else add it to backlog
-		self.task_backlog.append({"type":task, "data":data})
+		self.task_backlog.append({"type":task, "data":data, "identifier": identifier})
 		self.task_backlog.sort(key=lambda x: self.task_priority[x['type']])
 		return False
 	
@@ -289,10 +333,11 @@ class Bot:
 
 	def task_complete(self,ct:Controller):
 		print(f'Completed Task: {self.task['type']}, Data: {self.task['data']}')
+		self.done_tasks.append(self.task)
 		if self.task_backlog:
 			self.task = self.task_backlog.pop(0)
 		else:
-			self.task = {'type':BuilderTask.FIND_ORE,'data': None}
+			self.task = {'type':BuilderTask.FIND_ORE,'data': None, 'identifier': 0}
 		print(f'New Task: {self.task['type']}, Data: {self.task['data']}')
 
 	def rotational_flip(self, board:int) -> int:
@@ -356,24 +401,39 @@ class Bot:
 		else:
 			raise Exception('Map symmetry unknown')	
 	
-	def read_central_marker(self, ct: Controller, entity):
-		read = CentralMarkerData()
-		if ct.get_team(entity) == ct.get_team():
-			read.as_int = ct.get_marker_value(entity)
-			if self.central_marker_data.b.date > read.b.date: 
-				# My one is newer - overwrite
-				if ct.can_place_marker(ct.get_position(entity)):
-					ct.place_marker(ct.get_position(entity), self.central_marker_data.as_int)
-			elif self.central_marker_data.b.date < read.b.date:
-				# My one is older - replace internal data with this new one
-				self.central_marker_data.as_int = read.as_int
+	def read_marker(self, ct:Controller, marker):
+		read = MarkerData()
+		read.as_int =ct.get_marker_value(marker)
+		#Central marker
+		if read.type == 0:	
+			self.read_central_marker(ct, marker)
+		elif read.type == 1:
+			self.read_task_marker(ct, marker)
+		
 
-				self.map_symmetry = self.central_marker_data.b.known_map_symmetry
+
+	def read_central_marker(self, ct: Controller, marker):
+		read = CentralMarkerData()
+		read.as_int = ct.get_marker_value(marker)
+		if self.central_marker_data.b.date > read.b.date: 
+			# My one is newer - overwrite
+			# better to destroy rather than overwrite since we can destroy unlimited amounts per turn
+			# and there should be a marker near us that we have placed anyway
+			if ct.can_destroy(ct.get_position(marker)):
+				ct.destroy(ct.get_position(marker))
+		elif self.central_marker_data.b.date < read.b.date:
+			# My one is older - replace internal data with this new one
+			self.central_marker_data.as_int = read.as_int
+
+			self.map_symmetry = self.central_marker_data.b.known_map_symmetry
+	
+	def read_task_marker(self, ct: Controller, entity):
+		pass
+		
 
 class BuilderBot(Bot):
 	def __init__(self, ct:Controller, core_pos: Position, move_dir: Direction):
 		# Initialises the parent class (Bot) to generate the bit boards and inherit the corresponding variables and functions
-		
 		#must generate before calling super()
 		#most to least priority
 		priority_list = [BuilderTask.ATTACK_ENEMY_CORE, BuilderTask.GOTO_ENEMY_CORE, BuilderTask.FOUND_CORE, BuilderTask.FIND_ENEMY_CORE,BuilderTask.BUILD_BRIDGE, BuilderTask.FOUND_AX_ORE, BuilderTask.FOUND_TI_ORE, BuilderTask.FIND_ORE]
@@ -399,7 +459,7 @@ class BuilderBot(Bot):
 		self.path = [] # List[Position] - ordered steps from current position to target
 		self.path_index = 0 # How far along the path we are
 		self.path_board = None # Bitboard representation of the path for parallel collision detection
-
+		self.own_markers_board = 0
 		
 		#which tasks should aim adjacent to their target when path-finding
 		adjacent_tasks = [BuilderTask.GOTO_ENEMY_CORE, BuilderTask.FOUND_CORE, BuilderTask.FIND_ENEMY_CORE, BuilderTask.FOUND_AX_ORE, BuilderTask.FOUND_TI_ORE, BuilderTask.BUILD_BRIDGE]
@@ -410,6 +470,24 @@ class BuilderBot(Bot):
 		if ct.get_current_round() >= 50:
 			self.add_task(BuilderTask.FIND_ENEMY_CORE, 0)
 			
+	def read_task_marker(self, ct: Controller, entity):
+		read = TaskMarkerData()
+		read.as_int = ct.get_marker_value(entity)
+		if read.b.date == ct.get_current_round():
+			if read.b.task_type == self.task["type"] and read.b.is_solo and read.b.identifier == self.task["identifier"]:
+				self.task_complete(ct)
+			# new_tasks = []
+			# done_tasks = []
+			# for task in self.task_backlog:
+			# 	if read.b.task_type == task["type"] and read.b.is_solo and read.b.identifier == task["identifier"]:
+			# 		done_tasks.append(task)
+			# 	else:
+			# 		new_tasks.append(task)
+			
+					
+			
+
+	
 	# Static so it can be alled through the class without needing to pass in self
 	@staticmethod
 	def chebyshev(a: Position, b: Position) -> int:
@@ -993,15 +1071,14 @@ class Core(Bot):
 				ct.spawn_builder(spawn_pos)
 				self.num_spawned += 1
 
+		for ent in ct.get_nearby_entities():
+			if ct.get_entity_type(ent) == EntityType.MARKER and ct.get_team() == ct.get_team(ent):
+				# Compare my internal central marker data with the existing marker
+				self.read_marker(ct, ent)
+
 		for x in range(-2, 3):
 			for y in range(-2, 3):
 				new_pos = Position(ct.get_position().x + x, ct.get_position().y + y)
 				if ct.can_place_marker(new_pos):
-					# First check if there's an existing marker
-					entity = ct.get_tile_building_id(new_pos)
-					if entity == None:
-						# Just put a blank one
-						ct.place_marker(new_pos, self.central_marker_data.as_int)
-					elif ct.get_entity_type(entity) == EntityType.MARKER:
-						# Compare my internal central marker data with the existing marker
-						self.read_central_marker(ct, entity)
+					ct.place_marker(new_pos, self.central_marker_data.as_int)
+					
