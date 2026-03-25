@@ -13,10 +13,6 @@ def eprint(*args, **kwargs):
 DIRECTIONS = [d for d in Direction if d != Direction.CENTRE]
 CARDINAL_DIRECTIONS = [Direction.NORTH, Direction.SOUTH, Direction.EAST, Direction.WEST]
 CONVEYOR_ENTITIES = [EntityType.CONVEYOR, EntityType.BRIDGE, EntityType.ARMOURED_CONVEYOR]
-
-class GenericTask(Enum):
-	NOTHING = 'Nothing'
-
 class BuilderTask(IntEnum):
 	FIND_ORE = 0
 	BUILD_BRIDGE = 1
@@ -29,11 +25,13 @@ class BuilderTask(IntEnum):
 	ATTACK_ENEMY_BRIDGE = 8
 DO_ONCE_TASKS = [BuilderTask.FOUND_TI_ORE, BuilderTask.FOUND_AX_ORE, BuilderTask.BUILD_BRIDGE, BuilderTask.ATTACK_ENEMY_BRIDGE]
 
-type Task = BuilderTask | GenericTask
+type Task = BuilderTask 
 class TaskData(TypedDict):
+	uid: int
 	type: Task
 	data: Any
 	identifier: int
+	interruptable: bool
 
 class MapSymmetry(IntEnum):
 	ROTATIONAL = 1
@@ -136,6 +134,7 @@ class Player:
 
 class Bot:
 	def __init__(self, ct: Controller):
+		self.task_num = 0
 		self.count = 0
 
 		# Cache map dimensions gloabally for this unit
@@ -305,7 +304,7 @@ class Bot:
 				
 				self.titanium_ores_board = self.set_bit(self.titanium_ores_board,pos)
 				if is_builder_bot:
-					self.add_task(BuilderTask.FOUND_TI_ORE, pos)
+					self.add_task(BuilderTask.FOUND_TI_ORE, pos, True)
 			elif env == Environment.ORE_AXIONITE:
 				self.axionite_ores_board = self.set_bit(self.axionite_ores_board,pos)
 				# if isinstance(self, BuilderBot):
@@ -377,7 +376,7 @@ class Bot:
 
 		return identifier
 
-	def add_task(self, task: Task, data: Any)->bool:
+	def add_task(self, task: Task, data: Any, interruptable=False)->bool:
 		"""Adds the given task, and decides whether to execute the task based on its priority. Returns True if we are switching to that task, False if not """
 		# don't add this task if it has already been completed
 		identifier = self.get_task_identifier(task, data)
@@ -391,7 +390,8 @@ class Bot:
 					return False
 		
 		# else add it to backlog
-		self.task_backlog.append({"type":task, "data":data, "identifier": identifier})
+		self.task_backlog.append({"type":task, "data":data, "identifier": identifier, "interruptable": interruptable, "uid":self.task_num})
+		self.task_num+=1
 		return False
 	
 		# # if higher task priority, bench the current task and switch to it
@@ -410,18 +410,18 @@ class Bot:
 
 	def sort_task_backlog(self, ct):
 		if self.task_backlog:
-			self.task_backlog.sort(key=lambda x: (self.task_priority[x['type']], self.get_task_secondary_priority(ct,x)))
+			self.task_backlog.sort(key=lambda x: (self.task_priority[x['type']], self.get_task_secondary_priority(ct,x), x['uid']))
 
 	def task_complete(self,ct:Controller):
-		print(f'Completed Task: {self.task['type']}, Data: {self.task['data']}')
 		if self.task['type'] in DO_ONCE_TASKS:
 			self.done_tasks.append(self.task)
 		if self.task_backlog:
 			self.sort_task_backlog(ct)
 			self.task = self.task_backlog.pop(0)
+			print(f'New Task: {self.task['type']}, Data: {self.task['data']}, Interruptable: {self.task["interruptable"]}')
 		else:
-			self.task = {'type':BuilderTask.FIND_ORE,'data': None, 'identifier': 0}
-		print(f'New Task: {self.task['type']}, Data: {self.task['data']}')
+			eprint("No new task - this is bad tell Jose")
+			print("no new task")
 
 	def rotational_flip(self, board:int) -> int:
 		total_bits = self.map_width * self.map_height
@@ -540,6 +540,7 @@ class BuilderBot(Bot):
 		
 		if ct.get_current_round() >= 50:
 			self.add_task(BuilderTask.FIND_ENEMY_CORE, 0)
+		self.add_task(BuilderTask.FIND_ORE, None, True)
 
 	def read_task_marker(self, ct: Controller, entity):
 		read = TaskMarkerData()
@@ -865,7 +866,6 @@ class BuilderBot(Bot):
 				self.compute_path(current_pos, self.target)
 			# Check if the current cached path has been blocked
 			if self.path and self.check_path_collisions(self.path, self.path_index):
-				print('path collision')
 				# Path is blocked, need to recompute
 				self.compute_path(current_pos, self.target)
 
@@ -896,26 +896,32 @@ class BuilderBot(Bot):
 
 	def process_tasks(self, ct:Controller):
 		"""Processes the current task, returning True if we should continue processing"""
+		# if there are some tasks in the back log and our current task is interruptable
+		original_task = None
+		if self.task and self.task['interruptable'] and self.task_backlog:
+			self.task_backlog.append(self.task)
+			original_task = self.task
+			self.task = None
 		if not self.task:
-			
 			if self.task_backlog:
-				print('Retrieve task from backlog')
 				self.sort_task_backlog(ct)
 				self.task = self.task_backlog.pop(0)
-			else:
-				print('No task: resort to finding ore')
-				self.task = {'type':BuilderTask.FIND_ORE, 'data':None,'identifier':0}
-			return True
-		print(f'Task: {self.task['type']}, Data: {self.task['data']}')
+				if not original_task == self.task:
+					print(f'Original task interrupted\nOrig: {self.task['type']}, Data: {self.task['data']}, Interruptable: {self.task["interruptable"]}')
+					self.target = None
+					self.reset_bridge_path()
+					self.reset_path()
+					self.conveyor_path = []
+				else:
+					print('Task was not interrupted')
+				
+		print(f'Task: {self.task['type']}, Data: {self.task['data']}, Interruptable: {self.task["interruptable"]}')
 		self.target: Position
 		current_pos = ct.get_position()
 		reached_target = not self.target is None and current_pos.distance_squared(self.target) <=self.target_radius_sq
 		match self.task['type']:
 			# TODO: SEARCH for ORE - better search pattern
 			case BuilderTask.FIND_ORE:
-				if self.task_backlog:
-					self.task_complete(ct)
-					return True
 				if reached_target or self.target is None:
 					x = current_pos.x + self.move_dir.delta()[0]*8
 					y = current_pos.y + self.move_dir.delta()[1]*8
