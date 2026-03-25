@@ -859,7 +859,7 @@ class BuilderBot(Bot):
 		keep_processing_tasks = True
 		while (keep_processing_tasks):
 			
-			if self.task and ct.get_global_resources()[0]<300 and self.task['type'] != BuilderTask.BUILD_BRIDGE and ct.get_current_round()<=30:
+			if self.task and ct.get_global_resources()[0]<350 and self.task['type'] != BuilderTask.BUILD_BRIDGE and ct.get_current_round()<=30:
 				break
 			current_pos = ct.get_position()
 			keep_processing_tasks = self.process_tasks(ct)
