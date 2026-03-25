@@ -155,7 +155,7 @@ class Bot:
 		self.team_bridges_board = 0
 		self.units_board = 0
 		self.ore_adjacent_board = 0
-		
+		self.seen_this_round_board = 0
 		# 1 1 1
 		# 1 0 1 mask
 		# 1 1 1 
@@ -188,9 +188,6 @@ class Bot:
 		# Essentially we map every tile on the map to a index on a binary number
 		# So if we had a 4 tile map a bitboard would look something like 0110 where tile 1 is assigned the value 0 and tile 3 is assigned 1
 		# Why use bit boards? Parallel queries. We can check if a tile is a wall by doing a single logical AND between the walls bitboard and a bitmask with a 1 at the index of the tile we want to query. This is much faster than querying the tile environment through the API every time we want to check if a tile is a wall.
-
-		# Run the map scan upon spawn
-		self.update_terrain_vision(ct)
 		
 	def board_string(self, board:int)->str:
 		"""Returns the string of all positions with a 1 in the board. Used for debugging"""
@@ -278,6 +275,7 @@ class Bot:
 		"""Called after moving to map newly revealed terrain.""" 
 		# This acts as a way to fill in the dark areas of map memory.
 		print("Updating terrain vision")
+		print(f'{ct.get_cpu_time_elapsed()} micros')
 		
 		self.units_board = 0
 		for id in ct.get_nearby_units():
@@ -316,12 +314,16 @@ class Bot:
 					if self.is_valid_position(check_pos):
 						self.ore_adjacent_board = self.set_bit(self.ore_adjacent_board, check_pos)
 			self.seen_board = self.set_bit(self.seen_board, pos)
-		
+		print(f'env {ct.get_cpu_time_elapsed()} micros')
 		#then update buildings
-		for pos in ct.get_nearby_tiles():	
-			# Skip if we have already mapped this tile as a wall (it cant change to anything else)
-			if self.check_bit(self.walls_board,pos):
+		for pos in ct.get_nearby_tiles():
+
+			# Skip if we have already mapped this tile as a wall (it cant change to anything else) or we already mapped this tile this round
+			if self.check_bit(self.walls_board,pos) or self.check_bit(self.seen_this_round_board, pos):
 				continue
+
+			self.seen_this_round_board = self.set_bit(self.seen_this_round_board, pos)
+			
 			#update buildings on a tile (need to do this for all non wall tiles every time)
 			#is it already passable or is it empty and there is no unit on it
 			if ct.is_tile_passable(pos) or (ct.is_tile_empty(pos) and not self.check_bit(self.units_board, pos)):
@@ -340,6 +342,8 @@ class Bot:
 				is_team: bool = ct.get_team() == ct.get_team(building_id)
 				if etype == EntityType.MARKER:
 					self.walkable_board = self.set_bit(self.walkable_board, pos)
+					if is_team:
+						self.read_marker(ct, building_id)
 				else:
 					if is_team:
 						self.team_buildings_board= self.set_bit(self.team_buildings_board, pos)
@@ -352,18 +356,11 @@ class Bot:
 								self.add_task(BuilderTask.ATTACK_ENEMY_BRIDGE, pos)
 
 
-
-		if self.map_symmetry == MapSymmetry.UNKNOWN:
-			self.check_symmetry()
-		print(f'Map Symmetry: {self.map_symmetry}')
-
-		for ent in ct.get_nearby_entities():
-			if ct.get_entity_type(ent) == EntityType.MARKER and ct.get_team() == ct.get_team(ent):
-				self.read_marker(ct, ent)
+		print(f'build {ct.get_cpu_time_elapsed()} micros')
 
 
 	def turn_start(self,ct):
-		pass
+		self.seen_this_round_board = 0
 
 	def turn_end(self, ct):
 		pass
@@ -824,7 +821,6 @@ class BuilderBot(Bot):
 		# Take the step
 		if ct.can_move(direction):
 			ct.move(direction)
-			self.update_terrain_vision(ct)
 			self.path_index += 1
 			return True
 		
@@ -846,6 +842,7 @@ class BuilderBot(Bot):
 		return enemy_core_pos
 	
 	def turn_start(self, ct: Controller):
+		super().turn_start(ct)
 		self.count=0
 		self.debug = False
 		# for i in range(len(self.task_backlog)):
@@ -853,14 +850,20 @@ class BuilderBot(Bot):
 		# 	print(f'Qd Task no. {i+1}: {t['type']}, Data: {t['data']}')
 		# Update our map with any newly visible terrain
 		self.update_terrain_vision(ct)
-
+		#check for symmetry
+		if self.map_symmetry == MapSymmetry.UNKNOWN:
+			self.check_symmetry()
+		print(f'Map Symmetry: {self.map_symmetry}')
+		print(f'Before processing tasks {ct.get_cpu_time_elapsed()} micros')
+		task_time = ct.get_cpu_time_elapsed()
 		keep_processing_tasks = True
 		while (keep_processing_tasks):
+			
 			if self.task and ct.get_global_resources()[0]<300 and self.task['type'] != BuilderTask.BUILD_BRIDGE and ct.get_current_round()<=30:
 				break
 			current_pos = ct.get_position()
+			keep_processing_tasks = self.process_tasks(ct)
 			if self.target is None:
-				keep_processing_tasks = self.process_tasks(ct)
 				continue
 			elif not self.path:
 				self.compute_path(current_pos, self.target)
@@ -877,8 +880,8 @@ class BuilderBot(Bot):
 				# No valid path - try recomputing (maybe we have seen new terrain)
 				if self.compute_path(current_pos, self.target):
 					self.follow_path(ct)
-			
-			keep_processing_tasks = self.process_tasks(ct)
+			print (f'took {ct.get_cpu_time_elapsed()-task_time}')
+			task_time = ct.get_cpu_time_elapsed()
 		print(f'Current Target: {self.target}')
 		print(f"Path: {self.path_string(self.path)}")
 		print(f'Bridge Path: {self.path_string(self.bridge_path)}')
@@ -907,7 +910,8 @@ class BuilderBot(Bot):
 				self.sort_task_backlog(ct)
 				self.task = self.task_backlog.pop(0)
 				if not original_task == self.task:
-					print(f'Original task interrupted\nOrig: {self.task['type']}, Data: {self.task['data']}, Interruptable: {self.task["interruptable"]}')
+					if original_task:
+						print(f'Original task interrupted\nOrig: {original_task['type']}, Data: {original_task['data']}, Interruptable: {original_task["interruptable"]}')
 					self.target = None
 					self.reset_bridge_path()
 					self.reset_path()
@@ -1319,6 +1323,7 @@ class SentinelBot(Bot):
 					break
 
 	def turn_start(self, ct:Controller):
+		super().turn_start(ct)
 		if self.core_at:
 			self.attack(ct, self.core_at)
 		else:
@@ -1340,7 +1345,7 @@ class Core(Bot):
 		self.spawn_d = Direction.NORTH
 
 	def turn_start(self, ct: Controller):
-		
+		super().turn_start(ct)
 		if self.num_spawned < 4:
 			spawn_pos = ct.get_position().add(self.spawn_d)
 			# Rotate 90 degrees for the next spaw so that bots fan out
