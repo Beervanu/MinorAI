@@ -3,7 +3,11 @@ from typing import TypedDict, Any
 import heapq
 from enum import Enum, IntEnum
 from cambc import Controller, Direction, EntityType, Environment, Position, GameConstants
-from random import choice
+from random import choice, randint
+import sys
+
+def eprint(*args, **kwargs):
+    print(*args, file=sys.stderr, **kwargs)
 
 # non-centre directions
 DIRECTIONS = [d for d in Direction if d != Direction.CENTRE]
@@ -22,7 +26,8 @@ class BuilderTask(IntEnum):
 	GOTO_ENEMY_CORE = 5
 	ATTACK_ENEMY_CORE = 6
 	FOUND_CORE = 7
-DO_ONCE_TASKS = [BuilderTask.FOUND_TI_ORE, BuilderTask.FOUND_AX_ORE, BuilderTask.BUILD_BRIDGE]
+	ATTACK_ENEMY_BRIDGE = 8
+DO_ONCE_TASKS = [BuilderTask.FOUND_TI_ORE, BuilderTask.FOUND_AX_ORE, BuilderTask.BUILD_BRIDGE, BuilderTask.ATTACK_ENEMY_BRIDGE]
 
 type Task = BuilderTask | GenericTask
 class TaskData(TypedDict):
@@ -78,7 +83,7 @@ class TaskMarkerData(MarkerData):
 
 	@property
 	def task_type(self):
-		return self.get_bits(12,3)
+		return self.get_bits(12,4)
 
 	@task_type.setter
 	def task_type(self, val):
@@ -86,11 +91,11 @@ class TaskMarkerData(MarkerData):
 	
 	@property
 	def task_identifier(self):
-		return self.get_bits(15,16)
+		return self.get_bits(16,15)
 
 	@task_identifier.setter
 	def task_identifier(self, val):
-		self.set_bits(15, val)
+		self.set_bits(16, val)
 
 class CentralMarkerData(MarkerData):
 	@property
@@ -102,30 +107,32 @@ class CentralMarkerData(MarkerData):
 		self.set_bits(12, val)
 
 class Player:
-    def __init__(self):
-        self.first_turn = True
-        self.bot: Bot
+	def __init__(self):
+		self.first_turn = True
+		self.bot: Bot
 
-    def run(self, ct: Controller) -> None:
-        if self.first_turn:
-            etype = ct.get_entity_type()
-            if etype == EntityType.CORE:
-                self.bot = Core(ct)
-            elif etype == EntityType.BUILDER_BOT:
-                core_pos: Position
-                move_dir = Direction.NORTH
-                # Find the core to determine starting coordinates and initial movement direction
-                for uID in ct.get_nearby_units():
-                    if ct.get_entity_type(uID) == EntityType.CORE:
-                        core_pos = ct.get_position(uID)
-                        move_dir = ct.get_position().direction_to(core_pos).opposite()
-                        break
-                self.bot = BuilderBot(ct, core_pos, move_dir)
-            
-            self.first_turn = False
+	def run(self, ct: Controller) -> None:
+		if self.first_turn:
+			etype = ct.get_entity_type()
+			if etype == EntityType.CORE:
+				self.bot = Core(ct)
+			elif etype == EntityType.BUILDER_BOT:
+				core_pos: Position
+				move_dir = Direction.NORTH
+				# Find the core to determine starting coordinates and initial movement direction
+				for uID in ct.get_nearby_units():
+					if ct.get_entity_type(uID) == EntityType.CORE:
+						core_pos = ct.get_position(uID)
+						move_dir = ct.get_position().direction_to(core_pos).opposite()
+						break
+				self.bot = BuilderBot(ct, core_pos, move_dir)
+			elif etype == EntityType.SENTINEL:
+				self.bot = SentinelBot(ct)
+			
+			self.first_turn = False
         
-        self.bot.turn_start(ct)
-        self.bot.turn_end(ct)
+		self.bot.turn_start(ct)
+		self.bot.turn_end(ct)
 
 class Bot:
 	def __init__(self, ct: Controller):
@@ -134,7 +141,7 @@ class Bot:
 		# Cache map dimensions gloabally for this unit
 		self.map_width = ct.get_map_width()
 		self.map_height = ct.get_map_height()
-		self.task: TaskData = {'type': GenericTask.NOTHING, 'data': None, 'identifier': 0}
+		self.task: TaskData = None
 		self.task_backlog: list[TaskData] = []
 		self.task_priority: dict[Task, int]
 		self.done_tasks: list[TaskData] = []
@@ -148,6 +155,7 @@ class Bot:
 		self.enemy_buildings_board = 0
 		self.team_bridges_board = 0
 		self.units_board = 0
+		self.ore_adjacent_board = 0
 		
 		# 1 1 1
 		# 1 0 1 mask
@@ -263,6 +271,10 @@ class Bot:
 		# This means that the index of input tile is set to 0 and everything is set to 1. And well 0 AND anything is 0.
 		return bitboard & ~(bitmask)
 
+	def is_valid_position(self, pos:Position)->bool:
+		"""Returns true if in map bounds"""
+		return 0<=pos.x<self.map_width and 0<=pos.y<self.map_height
+
 	def update_terrain_vision(self, ct:Controller):
 		"""Called after moving to map newly revealed terrain.""" 
 		# This acts as a way to fill in the dark areas of map memory.
@@ -275,30 +287,42 @@ class Bot:
 				if pos == ct.get_position():
 					continue
 				self.units_board = self.set_bit(self.units_board, pos)
+		is_builder_bot = isinstance(self, BuilderBot)
 
+		#first update environment
 		for pos in ct.get_nearby_tiles():
-			# Skip if we have already mapped this tile as a wall (it cant change to anything else)
-			if self.check_bit(self.walls_board,pos):
+			# Skip if we have already mapped this tile as a wall (the environment can't change to anything else)
+			if self.check_bit(self.seen_board,pos):
 				continue
 			
 
 			# Jose has changed the logic of this function and did not update the corresponding comments btw 💔.
 			# The change is we now have a seen board which essentially did what I already did but it a more compact way.
 			env = ct.get_tile_env(pos)
-			if not self.check_bit(self.seen_board, pos):
-				if env == Environment.WALL:
-					self.walls_board = self.set_bit(self.walls_board,pos)
-				elif env == Environment.ORE_TITANIUM:
-					self.titanium_ores_board = self.set_bit(self.titanium_ores_board,pos)
-					if isinstance(self, BuilderBot):
-						self.add_task(BuilderTask.FOUND_TI_ORE, pos)
-				elif env == Environment.ORE_AXIONITE:
-					self.axionite_ores_board = self.set_bit(self.axionite_ores_board,pos)
-					# if isinstance(self, BuilderBot):
-					# 	self.add_task(BuilderTask.FOUND_AX_ORE, pos)
-				self.seen_board = self.set_bit(self.seen_board, pos)
+			if env == Environment.WALL:
+				self.walls_board = self.set_bit(self.walls_board,pos)
+			elif env == Environment.ORE_TITANIUM:
 				
+				self.titanium_ores_board = self.set_bit(self.titanium_ores_board,pos)
+				if is_builder_bot:
+					self.add_task(BuilderTask.FOUND_TI_ORE, pos)
+			elif env == Environment.ORE_AXIONITE:
+				self.axionite_ores_board = self.set_bit(self.axionite_ores_board,pos)
+				# if isinstance(self, BuilderBot):
+				# 	self.add_task(BuilderTask.FOUND_AX_ORE, pos)
 			
+			if env == Environment.ORE_AXIONITE or env == Environment.ORE_TITANIUM:
+				for d in CARDINAL_DIRECTIONS:
+					check_pos = pos.add(d)
+					if self.is_valid_position(check_pos):
+						self.ore_adjacent_board = self.set_bit(self.ore_adjacent_board, check_pos)
+			self.seen_board = self.set_bit(self.seen_board, pos)
+		
+		#then update buildings
+		for pos in ct.get_nearby_tiles():	
+			# Skip if we have already mapped this tile as a wall (it cant change to anything else)
+			if self.check_bit(self.walls_board,pos):
+				continue
 			#update buildings on a tile (need to do this for all non wall tiles every time)
 			#is it already passable or is it empty and there is no unit on it
 			if ct.is_tile_passable(pos) or (ct.is_tile_empty(pos) and not self.check_bit(self.units_board, pos)):
@@ -324,9 +348,11 @@ class Bot:
 							self.team_bridges_board = self.set_bit(self.team_bridges_board,pos)
 					else:
 						self.enemy_buildings_board= self.set_bit(self.enemy_buildings_board, pos)
-					
+						if etype in CONVEYOR_ENTITIES:
+							if self.check_bit(self.ore_adjacent_board, pos) and is_builder_bot:
+								self.add_task(BuilderTask.ATTACK_ENEMY_BRIDGE, pos)
 
-		
+
 
 		if self.map_symmetry == MapSymmetry.UNKNOWN:
 			self.check_symmetry()
@@ -346,7 +372,7 @@ class Bot:
 	def get_task_identifier(self, task:Task, data:Any):
 		identifier = 0
 		match task:
-			case BuilderTask.FOUND_AX_ORE | BuilderTask.FOUND_TI_ORE | BuilderTask.BUILD_BRIDGE:
+			case BuilderTask.FOUND_AX_ORE | BuilderTask.FOUND_TI_ORE | BuilderTask.BUILD_BRIDGE | BuilderTask.ATTACK_ENEMY_BRIDGE:
 				identifier = data.y*self.map_width + data.x
 
 		return identifier
@@ -356,18 +382,16 @@ class Bot:
 		# don't add this task if it has already been completed
 		identifier = self.get_task_identifier(task, data)
 		if task in DO_ONCE_TASKS:
-			for t in self.done_tasks:
+			check_tasks = self.done_tasks+self.task_backlog
+			if self.task:
+				check_tasks.append(self.task)
+			for t in check_tasks:
 				if t['identifier'] == identifier:
-					print('Task already done: ', task)
+					print('Task already done or added: ', task)
 					return False
 		
-		#if no task, switch to that task
-		if not self.task:
-			self.task = {'type':task, 'data':data, 'identifier': identifier}
-			return True
 		# else add it to backlog
 		self.task_backlog.append({"type":task, "data":data, "identifier": identifier})
-		self.task_backlog.sort(key=lambda x: self.task_priority[x['type']])
 		return False
 	
 		# # if higher task priority, bench the current task and switch to it
@@ -376,11 +400,24 @@ class Bot:
 			# 	self.task = {'type':task, 'data':data}
 			# 	return True
 
+	def get_task_secondary_priority(self, ct:Controller, task:TaskData):
+		prio = float('inf')
+		match task['type']:
+			case BuilderTask.FOUND_TI_ORE | BuilderTask.FOUND_AX_ORE:
+				prio = ct.get_position().distance_squared(task['data'])
+
+		return prio
+
+	def sort_task_backlog(self, ct):
+		if self.task_backlog:
+			self.task_backlog.sort(key=lambda x: (self.task_priority[x['type']], self.get_task_secondary_priority(ct,x)))
+
 	def task_complete(self,ct:Controller):
 		print(f'Completed Task: {self.task['type']}, Data: {self.task['data']}')
 		if self.task['type'] in DO_ONCE_TASKS:
 			self.done_tasks.append(self.task)
 		if self.task_backlog:
+			self.sort_task_backlog(ct)
 			self.task = self.task_backlog.pop(0)
 		else:
 			self.task = {'type':BuilderTask.FIND_ORE,'data': None, 'identifier': 0}
@@ -415,9 +452,6 @@ class Bot:
 	
 	def check_symmetry(self) -> None:
 		"""Checks the symmetry of the map based on the currently seen terrain. Sets the map_symmetry variable accordingly."""
-		features = self.walls_board | self.axionite_ores_board | self.titanium_ores_board
-		if features == 0:
-			return  # nothing to compare yet
 
 		checks = [
 			(MapSymmetry.ROTATIONAL,   self.rotational_flip),
@@ -429,8 +463,10 @@ class Bot:
 			flipped_seen = flip_fn(self.seen_board)
 			both_seen    = self.seen_board & flipped_seen
 			wall_diff    = both_seen & (self.walls_board ^ flip_fn(self.walls_board))
-			ore_diff     = both_seen & (features ^ flip_fn(features))
-			if (wall_diff | ore_diff) == 0:
+			ti_ore_diff     = both_seen & (self.titanium_ores_board ^ flip_fn(self.titanium_ores_board))
+			ax_ore_diff     = both_seen & (self.axionite_ores_board ^ flip_fn(self.axionite_ores_board))
+
+			if (wall_diff | ti_ore_diff | ax_ore_diff) == 0:
 				possible.append(sym)
 
 		if len(possible) == 1:
@@ -450,11 +486,6 @@ class Bot:
 	def read_marker(self, ct:Controller, marker):
 		read = MarkerData()
 		read.as_int =ct.get_marker_value(marker)
-		print("marker")
-		print(ct.get_position(marker))
-		print(read.as_int)
-		print(read.type)
-		print(read.date)
 		if read.type == 0:	
 			self.read_central_marker(ct, marker)
 		elif read.type == 1:
@@ -484,7 +515,7 @@ class BuilderBot(Bot):
 		
 		#must generate before calling super()
 		#most to least priority
-		priority_list = [BuilderTask.ATTACK_ENEMY_CORE, BuilderTask.FOUND_CORE, BuilderTask.FIND_ENEMY_CORE,BuilderTask.BUILD_BRIDGE, BuilderTask.FOUND_AX_ORE, BuilderTask.FOUND_TI_ORE, BuilderTask.FIND_ORE]
+		priority_list = [BuilderTask.ATTACK_ENEMY_CORE, BuilderTask.FOUND_CORE, BuilderTask.FIND_ENEMY_CORE,BuilderTask.BUILD_BRIDGE, BuilderTask.ATTACK_ENEMY_BRIDGE, BuilderTask.FOUND_AX_ORE, BuilderTask.FOUND_TI_ORE, BuilderTask.FIND_ORE]
 		#generate lookup table for task priorities
 		self.task_priority = {}
 		for i in range(len(priority_list)):
@@ -494,7 +525,6 @@ class BuilderBot(Bot):
 		self.core_pos = core_pos
 		self.enemy_core_pos = None
 		self.move_dir = move_dir
-		self.travel_in_initial_dir = True
 		self.target = None
 		self.target_radius_sq = 2
 		#task 
@@ -512,12 +542,12 @@ class BuilderBot(Bot):
 			self.add_task(BuilderTask.FIND_ENEMY_CORE, 0)
 
 	def read_task_marker(self, ct: Controller, entity):
-		
 		read = TaskMarkerData()
 		read.as_int = ct.get_marker_value(entity)
 		if read.date == ct.get_current_round():
-			if read.task_type == self.task["type"]and self.task["type"] in DO_ONCE_TASKS and read.task_identifier == self.task["identifier"]:
-				self.task_complete(ct)
+			if self.task:
+				if read.task_type == self.task["type"]and self.task["type"] in DO_ONCE_TASKS and read.task_identifier == self.task["identifier"]:
+					self.task_complete(ct)
 		
 			# new_tasks = []
 			# done_tasks = []
@@ -642,9 +672,9 @@ class BuilderBot(Bot):
 
 		# closed_set: position we have fully expanded
 		closed_set = set()
+		count = 0
 		while open_set:
 			f, _, current = heapq.heappop(open_set)
-
 			# Skip if already fully expanded
 			if current in closed_set:
 				continue
@@ -799,29 +829,6 @@ class BuilderBot(Bot):
 		
 		return False
 	
-	def find_nearest_ore(self, ct: Controller) -> Position | None:
-		"""Scans visible tile for the nearest ore deposit."""
-
-		current_pos = ct.get_position()
-		best_pos = None 
-		best_dist = float('inf')
-
-		for pos in ct.get_nearby_tiles():
-			env = ct.get_tile_env(pos)
-			if env in (Environment.ORE_TITANIUM, Environment.ORE_AXIONITE):
-				building_id = ct.get_tile_building_id(pos)
-				if building_id:
-					if ct.get_team(building_id) == ct.get_team():
-						continue
-					else:
-						continue
-						#TODO what do we do when we encounter enemy harvesters
-				dist = self.chebyshev(current_pos, pos)
-				if dist < best_dist:
-					best_dist = dist
-					best_pos = pos
-		return best_pos
-	
 	def find_enemy_core(self, ct: Controller) -> Position | None:
 		"""
 		Scans visible tiles for the enemy core.
@@ -840,7 +847,6 @@ class BuilderBot(Bot):
 	def turn_start(self, ct: Controller):
 		self.count=0
 		self.debug = False
-		print(f'Task: {self.task['type']}, Data: {self.task['data']}')
 		# for i in range(len(self.task_backlog)):
 		# 	t= self.task_backlog[i]
 		# 	print(f'Qd Task no. {i+1}: {t['type']}, Data: {t['data']}')
@@ -849,6 +855,8 @@ class BuilderBot(Bot):
 
 		keep_processing_tasks = True
 		while (keep_processing_tasks):
+			if self.task and ct.get_global_resources()[0]<300 and self.task['type'] != BuilderTask.BUILD_BRIDGE and ct.get_current_round()<=30:
+				break
 			current_pos = ct.get_position()
 			if self.target is None:
 				keep_processing_tasks = self.process_tasks(ct)
@@ -857,6 +865,7 @@ class BuilderBot(Bot):
 				self.compute_path(current_pos, self.target)
 			# Check if the current cached path has been blocked
 			if self.path and self.check_path_collisions(self.path, self.path_index):
+				print('path collision')
 				# Path is blocked, need to recompute
 				self.compute_path(current_pos, self.target)
 
@@ -885,42 +894,43 @@ class BuilderBot(Bot):
 			col = max(col, 0)
 			ct.draw_indicator_dot(pos, col,col,col)
 
-	def is_valid_position(self, pos:Position)->bool:
-		"""Returns true if in map bounds"""
-		return 0<=pos.x<self.map_width and 0<=pos.y<self.map_height
-
 	def process_tasks(self, ct:Controller):
 		"""Processes the current task, returning True if we should continue processing"""
-		print('Process Tasks')
+		if not self.task:
+			
+			if self.task_backlog:
+				print('Retrieve task from backlog')
+				self.sort_task_backlog(ct)
+				self.task = self.task_backlog.pop(0)
+			else:
+				print('No task: resort to finding ore')
+				self.task = {'type':BuilderTask.FIND_ORE, 'data':None,'identifier':0}
+			return True
+		print(f'Task: {self.task['type']}, Data: {self.task['data']}')
 		self.target: Position
 		current_pos = ct.get_position()
 		reached_target = not self.target is None and current_pos.distance_squared(self.target) <=self.target_radius_sq
 		match self.task['type']:
-			case GenericTask.NOTHING:
-				self.add_task(BuilderTask.FIND_ORE, None)
-				self.task_complete(ct)
-				return True
 			# TODO: SEARCH for ORE - better search pattern
 			case BuilderTask.FIND_ORE:
 				if self.task_backlog:
 					self.task_complete(ct)
 					return True
 				if reached_target or self.target is None:
-					round = ct.get_current_round()
-					if not self.travel_in_initial_dir or round>50:
-						x = current_pos.x + choice([-8,0, 8])
-						y = current_pos.y + choice([-8,0,8])
-					else:
-						x = current_pos.x + self.move_dir.delta()[0]*8
-						y = current_pos.y + self.move_dir.delta()[1]*8
-						self.travel_in_initial_dir = self.is_valid_position(Position(x,y))
+					x = current_pos.x + self.move_dir.delta()[0]*8
+					y = current_pos.y + self.move_dir.delta()[1]*8
+					if not self.is_valid_position(Position(x,y)):
+						self.move_dir = self.move_dir.rotate_left().rotate_left()
+					x+=randint(-4,4)
+					y+=randint(-4,4)
 						
 
 					
 					x = max(0, min(x, self.map_width-1))
 					y= max(0, min(y, self.map_height-1))
-					self.change_target(Position(x,y), GameConstants.BUILDER_BOT_VISION_RADIUS_SQ)
+					self.change_target(Position(x,y), 9)
 			case BuilderTask.FOUND_AX_ORE | BuilderTask.FOUND_TI_ORE:
+				
 				if self.target is None:
 					self.change_target(self.task['data'], 2)
 					return True
@@ -955,9 +965,14 @@ class BuilderBot(Bot):
 									continue
 								#TODO: change to bitboards
 								building_id = ct.get_tile_building_id(check_pos)
-								if building_id and ct.get_team() == ct.get_team(building_id) and ct.get_entity_type(building_id) in CONVEYOR_ENTITIES:
-									self.task_complete(ct)
-									return True
+								if building_id:
+									etype = ct.get_entity_type(building_id)
+									if  ct.get_team() == ct.get_team(building_id):
+										if etype in CONVEYOR_ENTITIES:
+											self.task_complete(ct)
+											return True
+									
+
 
 						# TODO: build to nearest bridge instead of core - (check if bridge gets congested) - second task to decongest bridges ?
 						all_dir = [self.target.add(d) for d in CARDINAL_DIRECTIONS]
@@ -969,14 +984,9 @@ class BuilderBot(Bot):
 						self.task_complete(ct)
 						return True
 			case BuilderTask.BUILD_BRIDGE:
-				if self.count > 10:
-					raise Exception()
-					print("ya done fucked up")
-
-					return False
-				else:
-					self.count+=1
+				
 				if not self.bridge_path or self.check_path_collisions(self.bridge_path, self.bridge_path_index, True):
+					
 					#if this is the start of us building a bridge (i.e. first placement)
 					if not self.bridge_path:
 						bridge_start: Position = self.task['data']
@@ -1002,10 +1012,14 @@ class BuilderBot(Bot):
 							self.task_complete(ct)
 							return True
 						bridge_start = current_pos
-						
+					
+					
 					core_dirs= [self.core_pos.add(d) for d in DIRECTIONS]
 					core_dirs.sort(key=lambda pos: abs(bridge_start.x-pos.x)+abs(bridge_start.y -pos.y))
-					self.compute_bridge_path(bridge_start, core_dirs[0])
+					for dir in core_dirs:
+						if self.check_bit(self.walkable_board, dir):
+							self.compute_bridge_path(bridge_start, dir)
+							break
 					#if there is no path from this start we just abandon this harvester
 					if not self.bridge_path:
 						self.task_complete(ct)
@@ -1029,6 +1043,7 @@ class BuilderBot(Bot):
 
 					#try to build a bridge or a conveyor		
 					if ct.get_action_cooldown() == 0:
+						
 						next_bridge_point = self.bridge_path[self.bridge_path_index+1]
 						x_diff =next_bridge_point.x-self.target.x
 						if x_diff:
@@ -1075,6 +1090,7 @@ class BuilderBot(Bot):
 
 						#if we failed building conveyors, try to build a bridge instead
 						if ct.can_build_bridge(self.target, next_bridge_point):
+							
 							ct.build_bridge(self.target, next_bridge_point)
 							self.bridge_path_index+=1
 							
@@ -1089,6 +1105,7 @@ class BuilderBot(Bot):
 				#happens if we are building conveyors between bridgepoints since we turn off normal pathfinding
 				elif self.target is None:
 					if self.check_path_collisions(self.conveyor_path, 0, True):
+						
 						# we should be standing on a conveyor so destroy it and try building a bridge from here
 						if ct.can_destroy(current_pos):
 							ct.destroy(current_pos)
@@ -1117,7 +1134,9 @@ class BuilderBot(Bot):
 							ct.build_conveyor(build_at, build_to)
 							#move onto where we just built
 							if current_pos != build_at:
-								ct.move(current_pos.direction_to(build_at))
+								m_dir = current_pos.direction_to(build_at)
+								if ct.can_move(m_dir):
+									ct.move(m_dir)
 							self.conveyor_path.pop(0)
 							if len(self.conveyor_path) == 1:
 								self.bridge_path_index+=1
@@ -1130,7 +1149,40 @@ class BuilderBot(Bot):
 								self.change_target(self.bridge_path[self.bridge_path_index],2)
 								return False
 
+			case BuilderTask.ATTACK_ENEMY_BRIDGE:
+				if self.target is None:
+					self.change_target(self.task['data'], 0)
+					return True
+				if reached_target:
+					if self.check_bit(self.enemy_buildings_board, self.target):
+						if ct.can_fire(self.target):
+							ct.fire(self.target)
+					else:
+						#now aim for an adjacent tile so we can build the sentinel
+						self.change_target(self.target)
+						
+						if ct.can_destroy(self.target):
+							ct.destroy(self.target)
+						if ct.get_action_cooldown()==0 and ct.get_move_cooldown()==0 and ct.get_global_resources()>ct.get_sentinel_cost():
+							for d in DIRECTIONS:
+								if ct.can_move(d):
+									ct.move(d)
+									break
+							ore_dir = Direction.CENTRE
+							for d in CARDINAL_DIRECTIONS:
+								check_pos = self.target.add(d)
+								# TODO: change to add any conveyor
+								if self.is_valid_position(check_pos) and self.check_bit(self.titanium_ores_board|self.axionite_ores_board, check_pos):
+									ore_dir = d
+									break
+							ore_dir = ore_dir.opposite()
+							if ct.can_build_sentinel(self.target, ore_dir):
+								ct.build_sentinel(self.target, ore_dir)
+								self.task_complete(ct)
+					
 				
+						
+							
 
 			case BuilderTask.FIND_ENEMY_CORE:
 				if self.target is None:
@@ -1235,7 +1287,46 @@ class BuilderBot(Bot):
 		self.reset_path()
 		self.target = target
 		self.target_radius_sq = radius_sq
-		
+
+class SentinelBot(Bot):
+	def __init__(self, ct: Controller):
+		super().__init__(ct)
+		self.attack_mask = 0
+		self.facing = ct.get_direction()
+		self.position = ct.get_position()
+		check_pos = self.position.add(self.facing)
+		while (check_pos.distance_squared(self.position)<=ct.get_vision_radius_sq()):
+			for d in Direction:
+				check_pos2 = check_pos.add(d)
+				if self.is_valid_position(check_pos2) and check_pos2.distance_squared(self.position)<=ct.get_vision_radius_sq():
+					self.attack_mask = self.set_bit(self.attack_mask, check_pos2)
+			check_pos = check_pos.add(self.facing)
+		self.attack_mask = self.clear_bit(self.attack_mask, self.position)
+		self.team = ct.get_team()
+		self.core_at = None
+		for ent in ct.get_nearby_buildings():
+			etype = ct.get_entity_type(ent)
+			if etype == EntityType.CORE and ct.get_team(ent) != self.team:
+				core_pos = ct.get_position(ent)
+				if self.check_bit(self.attack_mask, core_pos):
+					self.core_at = core_pos
+					break
+
+	def turn_start(self, ct:Controller):
+		if self.core_at:
+			self.attack(ct, self.core_at)
+		else:
+			for ent in ct.get_nearby_entities():
+				pos = ct.get_position(ent)
+				if ct.get_team(ent) != self.team and self.check_bit(self.attack_mask, pos):
+					self.attack(ct, pos)
+	
+	def attack(self, ct:Controller, pos:Position):
+		"""Tries to attack the position"""
+		if ct.can_fire(pos):
+			ct.fire(pos)
+
+
 class Core(Bot):
 	def __init__(self, ct: Controller):
 		super().__init__(ct)
@@ -1262,7 +1353,7 @@ class Core(Bot):
 		for ent in ct.get_nearby_entities():
 			if ct.get_entity_type(ent) == EntityType.MARKER and ct.get_team() == ct.get_team(ent):
 				# Compare my internal marker data with the existing marker
-				self.read_marker(ct, ent)
+				self.read_marker(ct, ent) 
 
 		for x in range(-2, 3):
 			for y in range(-2, 3):
