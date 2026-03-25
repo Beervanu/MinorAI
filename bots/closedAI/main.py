@@ -79,10 +79,11 @@ class Bot:
 		self.team_buildings_board = 0
 		self.enemy_buildings_board = 0
 		self.team_bridges_board = 0
+		self.bridge_connections: set[tuple[Position, Position]] = set()  # (base_pos, target_pos) pairs
 		self.team_conveyors_board = 0
 		self.team_harvesters_board = 0
 		self.units_board = 0
-		self.gaps_to_fix = heapq.heapify([])
+		self.gaps_to_fix = []
 		self.last_tile = None
 		self.visited_harvesters = set()
 		self.friendly_harvesters = []
@@ -238,6 +239,7 @@ class Bot:
 					self.team_buildings_board= self.set_bit(self.team_buildings_board, pos)
 					if etype == EntityType.BRIDGE:
 						self.team_bridges_board = self.set_bit(self.team_bridges_board,pos)
+						self.bridge_connections.add((pos, ct.get_bridge_target(building_id)))
 					if etype == EntityType.CONVEYOR:
 						self.team_conveyors_board = self.set_bit(self.team_conveyors_board,pos)
 					if etype == EntityType.HARVESTER:
@@ -724,24 +726,32 @@ class BuilderBot(Bot):
 			# The following lines of code perform a parallel expansion of the reached area in all 8 directions using bit shifts. The edge masks are used to prevent wrap around when shifting.
 			# This mimicks the behaviour of water spreading from all the ones to the neighbours around the 1s.
 			# Think of the boarding being shifted in each direction then ORed adding ones in each of the compas directions. 
-			expanded |= (reached & self.not_left_edge_mask) << 1 # East
-			expanded |= (reached & self.not_right_edge_mask) >> 1 # West
+			expanded |= (reached & self.not_right_edge_mask) << 1 # East
+			expanded |= (reached & self.not_left_edge_mask) >> 1 # West
 			expanded |= (reached << self.map_width) # South
 			expanded |= (reached >> self.map_width) # North
-			expanded |= (reached & self.not_left_edge_mask) << (self.map_width + 1) # Southeast
-			expanded |= (reached & self.not_right_edge_mask) >> (self.map_width + 1) # Northwest
+			expanded |= (reached & self.not_right_edge_mask) << (self.map_width + 1) # Southeast
+			expanded |= (reached & self.not_left_edge_mask) >> (self.map_width + 1) # Northwest
 			expanded |= (reached & self.not_left_edge_mask) << (self.map_width - 1) # Southwest
-			expanded |= (reached & self.not_right_edge_mask) >> (self.map_width - 1) # Northeeast
+			expanded |= (reached & self.not_right_edge_mask) >> (self.map_width - 1) # Northeast
 
 			# Then we constrain the expansion to only move through our existing infrastructure.
 			reached = prev | (expanded & infrastructure_board)
+
+			# Cross bridges: a bridge base and its target are connected, so if either end is
+			# reachable, mark both as reachable.
+			for base_pos, target_pos in self.bridge_connections:
+				if self.check_bit(reached, base_pos) or self.check_bit(reached, target_pos):
+					reached = self.set_bit(reached, base_pos)
+					reached = self.set_bit(reached, target_pos)
 
 			if reached == prev:
 				# No more expansion possible, we have reached all tiles connected to the core
 				break
 
-		# Disconnected = infrastructure we have seen but the fill didn't reach. And obviously we constrain it what the bot has actually seen
-		disconnected = infrastructure_board & ~reached & self.seen_board
+		# Disconnected conveyors = conveyors the fill didn't reach. Bridges themselves are not
+		# "gaps to fix" since they span non-adjacent tiles and only their base is in the board.
+		disconnected = self.team_conveyors_board & ~reached & self.seen_board
 
 		# Extract the positions of the gaps and then sort them by distance.
 		gaps = []
@@ -1092,36 +1102,26 @@ class BuilderBot(Bot):
 					ct.self_destruct()
 				
 				# Need to add logic to start destroying the core with turrets and stuff.
+				
 			case BuilderTask.FIND_HARVESTERS:
-				if self.target is None:
-					self.friendly_harvesters = list(self.get_friendly_harvesters(ct))
-					if not self.friendly_harvesters:
-					# No friendly harvesters found, so follow a bridge or walk on a conveyor for now
-						for tile in ct.get_nearby_tiles():
-							pos = ct.get_position()
-							direction = pos.direction_to(tile)
-							direction_to_core = pos.direction_to(self.core_pos)
-							building_id = ct.get_tile_building_id(tile)
-							# I'm sorry for the long ahh if statement 😭. The tile needs to have a building id so that I can then query the building id to check that it is a bridge or conveyor
-							# Then I need to check that it is actually our teams building and then also check that it is not the tile we just came from.
-							# Then finally the long bit at the end is just checking if the infrastructure is moving in the direction of the core.
-							if building_id and ct.get_entity_type(building_id) == EntityType.BRIDGE and ct.get_team(building_id) == ct.get_team() and tile != self.last_tile:
-								bridge_target = ct.get_bridge_target(building_id)
-								target_direction = tile.direction_to(bridge_target)
-								if target_direction == direction_to_core:
-									self.change_target(tile, 1)
-									return True
-								
-							elif building_id and ct.get_entity_type(building_id) == EntityType.CONVEYOR and ct.get_team(building_id) == ct.get_team() and tile != self.last_tile and (ct.get_direction(building_id) in (direction_to_core, direction_to_core.rotate_left(), direction_to_core.rotate_right())):
-								if ct.can_move(direction):
-									ct.move(direction)
-									self.update_terrain_vision(ct)
-								return True
-					else: 
-						# Friendly harvesters found, set the target to the closest one and move towards it
-						self.friendly_harvesters.sort(key=lambda pos: self.chebyshev(pos, current_pos))
-						self.add_task(BuilderTask.FOUND_HARVESTER, None)
-						self.task_complete(ct)	
+				# Check every turn if an unvisited harvester is now visible
+				all_harvesters = list(self.get_friendly_harvesters(ct))
+				unvisited = [h for h in all_harvesters if h not in self.visited_harvesters]
+				if len(self.visited_harvesters) >= 3:
+					self.visited_harvesters.clear()
+					unvisited = all_harvesters
+				if unvisited:
+					self.friendly_harvesters = sorted(unvisited, key=lambda p: self.chebyshev(p, current_pos))
+					self.add_task(BuilderTask.FOUND_HARVESTER, None)
+					self.task_complete(ct)
+					return True
+				# No unvisited harvester visible - roam like FIND_ORE
+				next_pos = current_pos.add(self.move_dir)
+				if 0 <= next_pos.x < self.map_width and 0 <= next_pos.y < self.map_height and self.check_bit(self.walkable_board, next_pos):
+					if ct.can_move(self.move_dir):
+						ct.move(self.move_dir)
+				else:
+					self.move_dir = self.move_dir.rotate_right()
 			
 			case BuilderTask.FOUND_HARVESTER:
 				if self.target is None:
@@ -1137,25 +1137,33 @@ class BuilderBot(Bot):
 				# Still trying to reach the harvest so continue processing this task but also check if we can find any more friendly harvesters as we go.
 
 			case BuilderTask.FIX_GAPS:
-				# Iterate through the gaps in the heappq until it is empty.
-				self.gaps_to_fix = self.find_gaps(ct)
-				print(f"Found {len(self.gaps_to_fix)} gaps to fix")
-				print(f"Gaps: {[pos for _, pos in self.gaps_to_fix]}")
-				if not self.gaps_to_fix:
-					# No more gaps, task complete
-					print("No more gaps to fix")
-					self.task_complete(ct)
-					return True
-				if reached_target:
-					# We have reached the gap and now we have to determine what should go there.
-					print(f"I found a gap at {self.target}")
-					print(f"{self.check_bit(self.team_bridges_board, self.target)}")
-					pass
-				else:
-					# Get the closest gap and set it as the target
+				if self.target is None:
+					# Recompute gaps and pick the closest one
+					self.gaps_to_fix = self.find_gaps(ct)
+					if not self.gaps_to_fix:
+						self.task_complete(ct)
+						self.add_task(BuilderTask.FIND_HARVESTERS, None)
+						return True
 					_, closest_gap = heapq.heappop(self.gaps_to_fix)
 					self.change_target(closest_gap, 1)
-					# Once we reach the gap we determine whether a conveyor or a bridge is needed to fill gap then add it.
+					return True
+				if reached_target:
+					# A* from the gap toward the core to decide how to reconnect.
+					# BUILD_BRIDGE handles both cases: conveyors on walkable terrain,
+					# actual bridges over unwalkable terrain.
+					gap_pos = self.target
+					path = self.a_star(gap_pos, self.core_pos, False)
+					if path:
+						needs_bridge = any(not self.check_bit(self.walkable_board, p) for p in path)
+						print(f"Gap at {gap_pos} needs {'a bridge' if needs_bridge else 'conveyors'}")
+						self.task_complete(ct)
+						self.add_task(BuilderTask.BUILD_BRIDGE, gap_pos)
+						self.add_task(BuilderTask.FIX_GAPS, None)
+					else:
+						print(f"No path to reconnect gap at {gap_pos}, skipping")
+						self.task_complete(ct)
+						self.add_task(BuilderTask.FIX_GAPS, None)
+					return True
 		return False
 
 	def task_complete(self, ct:Controller):
