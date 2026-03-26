@@ -278,12 +278,21 @@ class Bot:
 		print(f'{ct.get_cpu_time_elapsed()} micros')
 		
 		self.units_board = 0
+		self.units_adjacent_board = 0
+		current_pos = ct.get_position()
 		for id in ct.get_nearby_units():
 			if ct.get_entity_type(id) == EntityType.BUILDER_BOT:
 				pos = ct.get_position(id)
-				if pos == ct.get_position():
+				if pos == current_pos:
 					continue
 				self.units_board = self.set_bit(self.units_board, pos)
+				
+				mask = 0
+				neighbours = map(lambda dir: pos.add(dir), DIRECTIONS)
+				for nbr in filter(lambda n: self.is_valid_position(n), neighbours):
+					mask = self.set_bit(mask, nbr)
+				self.units_adjacent_board |=mask
+
 		is_builder_bot = isinstance(self, BuilderBot)
 
 		#first update environment
@@ -546,6 +555,10 @@ class BuilderBot(Bot):
 			if self.task:
 				if read.task_type == self.task["type"]and self.task["type"] in DO_ONCE_TASKS and read.task_identifier == self.task["identifier"]:
 					self.task_complete(ct)
+			# TODO: right now identifier is always a position this is jank
+			if read.task_type in DO_ONCE_TASKS:
+				pos_index = read.task_identifier
+				self.clear_bit(self.walkable_board, Position(pos_index % self.map_width, floor(pos_index/self.map_width)))
 		
 			# new_tasks = []
 			# done_tasks = []
@@ -697,10 +710,12 @@ class BuilderBot(Bot):
 					continue
 				# Uniform cost of 1 per step for now
 				# added a cost to build roads (we don't need to worry about this when generating a bridge path)
-				road_build_cost = 0
+				extra_cost = 0
 				if not bridge and not self.check_bit(self.team_buildings_board| self.enemy_buildings_board, neighbour):
-					road_build_cost = 0.5
-				tentative_g = g_score[current] + 1 +road_build_cost
+					extra_cost += 0.5
+				if self.check_bit(self.units_adjacent_board, neighbour):
+					extra_cost+=1
+				tentative_g = g_score[current] + 1 +extra_cost
 				
 				# Checks if this path to the neighbour is better than any previously recorded path (or if there is no recorded path)
 				# The second argument is the default value if neighbour is not in g_score, which is infinity as we want to consider any path to it as better than no path.
@@ -1174,6 +1189,7 @@ class BuilderBot(Bot):
 						if ct.can_destroy(self.target):
 							ct.destroy(self.target)
 						if ct.get_action_cooldown()==0 and ct.get_move_cooldown()==0 and ct.get_global_resources()>ct.get_sentinel_cost():
+							#move out of the way and place a sentinel
 							for d in DIRECTIONS:
 								if ct.can_move(d):
 									ct.move(d)
@@ -1256,16 +1272,6 @@ class BuilderBot(Bot):
 					self.add_task(BuilderTask.ATTACK_ENEMY_CORE, None)
 					self.task_complete(ct)
 					return True
-			case BuilderTask.ATTACK_ENEMY_CORE:
-				if self.target is None:
-					for id in ct.get_nearby_buildings():
-						etype = ct.get_entity_type(id)
-						if etype == EntityType.BRIDGE and ct.get_team(id) != ct.get_team():
-							self.change_target(ct.get_position(id), 0)
-							return True
-				if reached_target:
-					ct.self_destruct()
-				
 				# Need to add logic to start destroying the core with turrets and stuff.
 		return False
 
@@ -1314,13 +1320,15 @@ class SentinelBot(Bot):
 		self.attack_mask = self.clear_bit(self.attack_mask, self.position)
 		self.team = ct.get_team()
 		self.core_at = None
-		for ent in ct.get_nearby_buildings():
-			etype = ct.get_entity_type(ent)
-			if etype == EntityType.CORE and ct.get_team(ent) != self.team:
-				core_pos = ct.get_position(ent)
-				if self.check_bit(self.attack_mask, core_pos):
-					self.core_at = core_pos
-					break
+		for pos in ct.get_nearby_tiles():
+			ent = ct.get_tile_building_id(pos)
+			if ent:
+				etype = ct.get_entity_type(ent)
+				if etype == EntityType.CORE and ct.get_team(ent) != self.team:
+					core_pos = ct.get_position(ent)
+					if self.check_bit(self.attack_mask, core_pos):
+						self.core_at = core_pos
+						break
 
 	def turn_start(self, ct:Controller):
 		super().turn_start(ct)
@@ -1329,13 +1337,16 @@ class SentinelBot(Bot):
 		else:
 			for ent in ct.get_nearby_entities():
 				pos = ct.get_position(ent)
-				if ct.get_team(ent) != self.team and self.check_bit(self.attack_mask, pos):
-					self.attack(ct, pos)
+				if ct.get_team(ent) != self.team and self.check_bit(self.attack_mask, pos) and ct.get_entity_type(ent) !=EntityType.HARVESTER:
+					if self.attack(ct, pos):
+						break
 	
 	def attack(self, ct:Controller, pos:Position):
 		"""Tries to attack the position"""
 		if ct.can_fire(pos):
 			ct.fire(pos)
+			return True
+		return False
 
 
 class Core(Bot):
@@ -1346,15 +1357,16 @@ class Core(Bot):
 
 	def turn_start(self, ct: Controller):
 		super().turn_start(ct)
-		if self.num_spawned < 4:
+		round = ct.get_current_round()
+		if self.num_spawned < 2 or (self.num_spawned<4 and round>20):
 			spawn_pos = ct.get_position().add(self.spawn_d)
 			# Rotate 90 degrees for the next spaw so that bots fan out
 			self.spawn_d=self.spawn_d.rotate_left().rotate_left()
 			if ct.can_spawn(spawn_pos):
 				ct.spawn_builder(spawn_pos)
 				self.num_spawned += 1
-		round = ct.get_current_round()
-		if  round >= 50 and not round %500:
+		
+		if  ct.get_global_resources()[0]>2000:
 			# Spawn a bot with the find bot task to start scouting for ore and the enemy core
 			spawn_pos = ct.get_position().add(self.spawn_d) 
 			if ct.can_spawn(spawn_pos):
