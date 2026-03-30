@@ -1,0 +1,398 @@
+from cambc import Controller
+from .Markers import *
+from .Tasktypes import *
+from cambc import Position,EntityType,Environment
+from .Constants import *
+from .Tasks import DO_ONCE_TASKS
+from .MapSymmetry import *
+from math import log2, floor
+import sys
+def eprint(*args, **kwargs):
+    print(*args, file=sys.stderr, **kwargs)
+
+
+class Bot:
+	def __init__(self, ct: Controller, entity_type:EntityType):
+		self.entity_type = entity_type
+		self.task_num = 0
+		self.count = 0
+
+		# Cache map dimensions gloabally for this unit
+		self.map_width = ct.get_map_width()
+		self.map_height = ct.get_map_height()
+		self.task: TaskData = None
+		self.task_backlog: list[TaskData] = []
+		self.task_priority: dict[Task, int]
+		self.done_tasks: list[TaskData] = []
+		# Initialisation of bitboards for different map features
+		self.seen_board = 0
+		self.walls_board = 0
+		self.axionite_ores_board = 0
+		self.titanium_ores_board = 0
+		self.walkable_board = 0
+		self.team_buildings_board = 0
+		self.enemy_buildings_board = 0
+		self.team_bridges_board = 0
+		self.units_board = 0
+		self.ore_adjacent_board = 0
+		self.seen_this_round_board = 0
+		self.team_harvesters_board = 0
+		# 1 1 1
+		# 1 0 1 mask
+		# 1 1 1 
+		self.direct_neighbour_mask = self.generate_mask([0b111, 0b101,0b111])
+		# 1
+		# 1 mask
+		# 1
+		self.direct_neighbour_vertical_mask = self.generate_mask([0b1]*3)
+
+		# 1 1 1 mask
+		self.direct_neighbour_horizontal_mask = 0b111
+
+		self.bridge_neighbour_mask = self.generate_mask([
+			0b0001000, 
+			0b0111110, 
+			0b0111110,
+			0b1110111,
+			0b0111110,
+			0b0111110,
+			0b0001000,])
+		
+		self.bridge_neighbour_vertical_mask = self.generate_mask([0b1]*7)
+		self.bridge_neighbour_horizontal_mask = 0b1111111
+
+		self.map_symmetry = MapSymmetry.UNKNOWN
+
+		self.central_marker_data = CentralMarkerData()
+
+		# What's a bitboard you ask? Well look no further Motion has got you covered.
+		# Essentially we map every tile on the map to a index on a binary number
+		# So if we had a 4 tile map a bitboard would look something like 0110 where tile 1 is assigned the value 0 and tile 3 is assigned 1
+		# Why use bit boards? Parallel queries. We can check if a tile is a wall by doing a single logical AND between the walls bitboard and a bitmask with a 1 at the index of the tile we want to query. This is much faster than querying the tile environment through the API every time we want to check if a tile is a wall.
+		
+	def board_string(self, board:int)->str:
+		"""Returns the string of all positions with a 1 in the board. Used for debugging"""
+		max_int = pow(2,self.map_width*self.map_height)-1
+		board = board&max_int
+		pos_list = []
+		while (board):
+			(board, pos) = self.pop_lsb(board)
+			pos_list.append(pos)
+		return self.path_string(pos_list)
+
+	def path_string(self, path: list[Position]):
+		s = ''
+		for pos in path:
+			s+=f'({pos.x}, {pos.y}) '
+		return s
+
+	def generate_mask(self, arr: list[int])->int:
+		mask = 0
+		for i in range(len(arr)):
+			mask+=arr[i]<<(self.map_width*i)
+		return mask
+
+	def closest_point(self, point:Position, arr:list[Position])->Position:
+		best_pos = None 
+		best_dist = float('inf')
+		for pos in arr:
+			dist = point.distance_squared(pos)
+			if dist< best_dist:
+				best_dist = dist
+				best_pos = pos
+		if not best_pos:
+			raise Exception('no closest point')
+		return best_pos
+
+	def pop_lsb(self, bitboard:int)-> tuple[int, Position]:
+		"""Gets the 1-lsb from a bitboard and then returns the bitboard with that bit set to 0 and the extracted position."""
+		# bitboard & -bitboard to isolate the 1-lsb
+		isolated_bit = bitboard & -bitboard
+		# gets the index
+		index = int(log2(isolated_bit))
+		# removes the bit we just processed
+		bitboard &= ~isolated_bit
+		return (bitboard, Position(index % self.map_width,floor(index/self.map_width)))
+	
+	def check_bit(self, bitboard:int, pos: Position) -> bool:
+		"""Returns True if the bit at th given position is 1."""
+		# Maps the position to the correct index for the bitboard
+		# Equation makes sense if you think hard enough. Think of the pos.y as all the completed rows so far
+		# then think of pos.x as how far you have made it along the current row.
+		index = pos.y * self.map_width + pos.x
+		bitmask = 1 << index
+		# Does a logical AND of the bitmask and the bitboard. 
+		# If it returns anything other than 0 then it returns true.
+		# Why does it work? Because every index of the bitboard other than the index you are querying is set to zero.
+		# So a logical AND sets all of these bits to zero regardless of it's state.
+		# This just leaves the index of the target bit and the index of the of the tile being queried.
+		# This leaves a binary (See what I did there) possiblity for the final output: Either the values of the bit at the index or 0.
+		return (bitboard & (bitmask)) != 0
+	
+	def set_bit(self, bitboard: int, pos: Position) -> int:
+		"""Turns the bit ON at a given Position and returns the new board."""
+		# Still maps the input position to the correct index for the bitboard. Nothing has changed here.
+		index = pos.y * self.map_width + pos.x
+		bitmask = 1 << index
+		# Alright so here we are peforming a logical OR on the bitboard at the index of the tile given.
+		# Two things here. As it is an OR it preserves the preserves the other indices in the board (1 OR 0 = 1, 0 OR 0 = 0).
+		# The second thing is that if the bit at the index provided is already on (is 1) it remains 1 as 1 OR 1 = 1 (Kind of inferred from the first point but idc).
+		return bitboard | bitmask
+	
+	def clear_bit(self, bitboard: int, pos: Position) -> int:
+		"""Turns the bit OFF at the given Postion and returns the new board."""
+		# Need I say anymore?
+		index = pos.y * self.map_width + pos.x
+		bitmask = 1 << index 
+		# And with the NOT of the bitmask so everything is flipped.
+		# This means that the index of input tile is set to 0 and everything is set to 1. And well 0 AND anything is 0.
+		return bitboard & ~(bitmask)
+
+	def is_valid_position(self, pos:Position)->bool:
+		"""Returns true if in map bounds"""
+		return 0<=pos.x<self.map_width and 0<=pos.y<self.map_height
+
+	def update_terrain_vision(self, ct:Controller):
+		"""Called after moving to map newly revealed terrain.""" 
+		# This acts as a way to fill in the dark areas of map memory.
+		print("Updating terrain vision")
+		self.units_board = 0
+		self.units_adjacent_board = 0
+		current_pos = ct.get_position()
+		for id in ct.get_nearby_units():
+			if ct.get_entity_type(id) == EntityType.BUILDER_BOT:
+				pos = ct.get_position(id)
+				if pos == current_pos:
+					continue
+				self.units_board = self.set_bit(self.units_board, pos)
+				
+				mask = 0
+				neighbours = map(lambda dir: pos.add(dir), DIRECTIONS)
+				for nbr in filter(lambda n: self.is_valid_position(n), neighbours):
+					mask = self.set_bit(mask, nbr)
+				self.units_adjacent_board |=mask
+
+		is_builder_bot = self.entity_type == EntityType.BUILDER_BOT
+
+		#first update environment
+		for pos in ct.get_nearby_tiles():
+			# Skip if we have already mapped this tile as a wall (the environment can't change to anything else)
+			if self.check_bit(self.seen_board,pos):
+				continue
+			
+
+			# Jose has changed the logic of this function and did not update the corresponding comments btw 💔.
+			# The change is we now have a seen board which essentially did what I already did but it a more compact way.
+			env = ct.get_tile_env(pos)
+			if env == Environment.WALL:
+				self.walls_board = self.set_bit(self.walls_board,pos)
+			elif env == Environment.ORE_TITANIUM:
+				
+				self.titanium_ores_board = self.set_bit(self.titanium_ores_board,pos)
+				if is_builder_bot:
+					self.add_task(BuilderTask.FOUND_TI_ORE, pos, True)
+			elif env == Environment.ORE_AXIONITE:
+				self.axionite_ores_board = self.set_bit(self.axionite_ores_board,pos)
+				# if isinstance(self, BuilderBot):
+				# 	self.add_task(BuilderTask.FOUND_AX_ORE, pos)
+			
+			if env == Environment.ORE_AXIONITE or env == Environment.ORE_TITANIUM:
+				for d in CARDINAL_DIRECTIONS:
+					check_pos = pos.add(d)
+					if self.is_valid_position(check_pos):
+						self.ore_adjacent_board = self.set_bit(self.ore_adjacent_board, check_pos)
+			self.seen_board = self.set_bit(self.seen_board, pos)
+		print(f'Updating environment took {ct.get_cpu_time_elapsed()}μs')
+		#then update buildings
+		for pos in ct.get_nearby_tiles():
+
+			# Skip if we have already mapped this tile as a wall (it cant change to anything else) or we already mapped this tile this round
+			if self.check_bit(self.walls_board,pos) or self.check_bit(self.seen_this_round_board, pos):
+				continue
+
+			self.seen_this_round_board = self.set_bit(self.seen_this_round_board, pos)
+			
+			#update buildings on a tile (need to do this for all non wall tiles every time)
+			#is it already passable or is it empty and there is no unit on it
+			if ct.is_tile_passable(pos) or (ct.is_tile_empty(pos) and not self.check_bit(self.units_board, pos)):
+				self.walkable_board = self.set_bit(self.walkable_board, pos)
+			else:
+				self.walkable_board = self.clear_bit(self.walkable_board, pos)
+			#add our own position to the walkable board so pathfinding isnt confused
+			self.walkable_board = self.set_bit(self.walkable_board, ct.get_position())
+			# update boards
+			self.team_buildings_board = self.clear_bit(self.team_buildings_board, pos)
+			self.enemy_buildings_board= self.clear_bit(self.enemy_buildings_board, pos)
+			self.team_bridges_board = self.clear_bit(self.team_bridges_board,pos)
+			self.team_harvesters_board = self.clear_bit(self.team_bridges_board,pos)
+			building_id = ct.get_tile_building_id(pos)
+			if building_id:
+				etype = ct.get_entity_type(building_id)
+				is_team: bool = ct.get_team() == ct.get_team(building_id)
+				if etype == EntityType.MARKER:
+					self.walkable_board = self.set_bit(self.walkable_board, pos)
+					if is_team:
+						self.read_marker(ct, building_id)
+				else:
+					if is_team:
+						self.team_buildings_board= self.set_bit(self.team_buildings_board, pos)
+						if etype == EntityType.BRIDGE:
+							self.team_bridges_board = self.set_bit(self.team_bridges_board,pos)
+						elif etype == EntityType.HARVESTER:
+							self.team_harvesters_board = self.set_bit(self.team_harvesters_board, pos)
+					else:
+						self.enemy_buildings_board= self.set_bit(self.enemy_buildings_board, pos)
+						if etype in CONVEYOR_ENTITIES:
+							if self.check_bit(self.ore_adjacent_board, pos) and is_builder_bot:
+								self.add_task(BuilderTask.ATTACK_ENEMY_BRIDGE, pos)
+
+
+		print(f'Updating buildings took {ct.get_cpu_time_elapsed()}μs')
+
+	def turn_start(self,ct):
+		self.seen_this_round_board = 0
+
+	def turn_end(self, ct:Controller):
+		if ct.get_cpu_time_elapsed()>2000:
+			eprint('Lagging, Round:', ct.get_current_round())
+
+	def get_task_identifier(self, task:Task, data:Any):
+		identifier = 0
+		match task:
+			case BuilderTask.FOUND_AX_ORE | BuilderTask.FOUND_TI_ORE | BuilderTask.BUILD_BRIDGE | BuilderTask.ATTACK_ENEMY_BRIDGE:
+				identifier = data.y*self.map_width + data.x
+
+		return identifier
+
+	def add_task(self, task: Task, data: Any, interruptable=False)->bool:
+		"""Adds the given task, and decides whether to execute the task based on its priority. Returns True if we are switching to that task, False if not """
+		# don't add this task if it has already been completed
+		identifier = self.get_task_identifier(task, data)
+		if task in DO_ONCE_TASKS:
+			check_tasks = self.done_tasks+self.task_backlog
+			if self.task:
+				check_tasks.append(self.task)
+			for t in check_tasks:
+				if t['identifier'] == identifier:
+					print('Task already done or added: ', task)
+					return False
+		
+		# else add it to backlog
+		self.task_backlog.append({"type":task, "data":data, "identifier": identifier, "interruptable": interruptable, "uid":self.task_num})
+		self.task_num+=1
+		return False
+	
+		# # if higher task priority, bench the current task and switch to it
+			# if self.task_priority[self.task['type']] < self.task_priority[task]:
+			# 	self.task_backlog.insert(0, self.task)
+			# 	self.task = {'type':task, 'data':data}
+			# 	return True
+
+	def get_task_secondary_priority(self, ct:Controller, task:TaskData):
+		prio = float('inf')
+		match task['type']:
+			case BuilderTask.FOUND_TI_ORE | BuilderTask.FOUND_AX_ORE:
+				prio = ct.get_position().distance_squared(task['data'])
+
+		return prio
+
+	def sort_task_backlog(self, ct):
+		if self.task_backlog:
+			self.task_backlog.sort(key=lambda x: (self.task_priority[x['type']], self.get_task_secondary_priority(ct,x), x['uid']))
+
+	def task_complete(self,ct:Controller):
+		if self.task['type'] in DO_ONCE_TASKS:
+			self.done_tasks.append(self.task)
+		if self.task_backlog:
+			self.sort_task_backlog(ct)
+			self.task = self.task_backlog.pop(0)
+			print(f'New Task: {self.task['type']}, Data: {self.task['data']}, I: {int(self.task["interruptable"])}')
+		else:
+			eprint("No new task - this is bad tell Jose")
+			print("no new task")
+
+	def rotational_flip(self, board:int) -> int:
+		total_bits = self.map_width * self.map_height
+		# bin(board) converts the bitboard to a binary string,
+		# [2:] removes the '0b' prefix,
+		# zfill pads it with leading zeros to ensure it has a length equal to the total number of bits, 
+		# [::-1] reverses the string to achieve the rotational flip, 
+		# and int(..., 2) converts it back to an integer.
+		return int(bin(board)[2:].zfill(total_bits)[::-1], 2)
+	
+	def horizontal_flip(self, board:int) -> int:
+		result = 0
+		row_mask = (1 << self.map_width) - 1
+		for y in range(self.map_height):
+			row = (board >> (y * self.map_width)) & row_mask
+			reversed_row = int(bin(row)[2:].zfill(self.map_width)[::-1], 2)
+			result |= reversed_row << (y * self.map_width)
+		return result
+
+	def vertical_flip(self, board:int) -> int:
+		result = 0
+		row_mask = (1 << self.map_width) - 1
+		for y in range(self.map_height):
+			row = (board >> (y * self.map_width)) & row_mask
+			reversed_row = int(bin(row)[2:].zfill(self.map_width), 2)
+			result |= reversed_row << ((self.map_height - 1 - y) * self.map_width)
+		return result
+	
+	def check_symmetry(self) -> None:
+		"""Checks the symmetry of the map based on the currently seen terrain. Sets the map_symmetry variable accordingly."""
+
+		checks = [
+			(MapSymmetry.ROTATIONAL,   self.rotational_flip),
+			(MapSymmetry.REFLECTION_Y, self.horizontal_flip),
+			(MapSymmetry.REFLECTION_X, self.vertical_flip),
+		]
+		possible = []
+		for sym, flip_fn in checks:
+			flipped_seen = flip_fn(self.seen_board)
+			both_seen    = self.seen_board & flipped_seen
+			wall_diff    = both_seen & (self.walls_board ^ flip_fn(self.walls_board))
+			ti_ore_diff     = both_seen & (self.titanium_ores_board ^ flip_fn(self.titanium_ores_board))
+			ax_ore_diff     = both_seen & (self.axionite_ores_board ^ flip_fn(self.axionite_ores_board))
+
+			if (wall_diff | ti_ore_diff | ax_ore_diff) == 0:
+				possible.append(sym)
+
+		if len(possible) == 1:
+			self.map_symmetry = possible[0]
+
+	def apply_symmetry(self, pos: Position) -> Position:
+		"""Applies the map symmetry to a given position to get the corresponding position on the other side of the map."""
+		if self.map_symmetry == MapSymmetry.ROTATIONAL:
+			return Position(self.map_width - 1 - pos.x, self.map_height - 1 - pos.y)
+		elif self.map_symmetry == MapSymmetry.REFLECTION_Y:
+			return Position(self.map_width - 1 - pos.x, pos.y)
+		elif self.map_symmetry == MapSymmetry.REFLECTION_X:
+			return Position(pos.x, self.map_height - 1 - pos.y)
+		else:
+			raise Exception('Map symmetry unknown')	
+	
+	def read_marker(self, ct:Controller, marker):
+		read = MarkerData()
+		read.as_int =ct.get_marker_value(marker)
+		if read.type == 0:	
+			self.read_central_marker(ct, marker)
+		elif read.type == 1:
+			self.read_task_marker(ct, marker)
+
+	def read_central_marker(self, ct: Controller, marker):
+		read = CentralMarkerData()
+		read.as_int = ct.get_marker_value(marker)
+		if self.central_marker_data.date > read.date: 
+			# My one is newer - overwrite
+			# better to destroy rather than overwrite since we can destroy unlimited amounts per turn
+			# and there should be a marker near us that we have placed anyway
+			if ct.can_destroy(ct.get_position(marker)):
+				ct.destroy(ct.get_position(marker))
+		elif self.central_marker_data.date < read.date:
+			# My one is older - replace internal data with this new one
+			self.central_marker_data.as_int = read.as_int
+
+			self.map_symmetry = self.central_marker_data.known_map_symmetry
+	
+	def read_task_marker(self, ct: Controller, entity):
+		pass

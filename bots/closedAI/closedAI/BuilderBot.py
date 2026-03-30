@@ -1,0 +1,501 @@
+from cambc import Controller, Position, Direction, EntityType
+from .Tasktypes import BuilderTask
+from .Markers import TaskMarkerData
+import heapq
+from math import floor
+from .Bot import *
+from .Tasks import builder_tasks, DO_ONCE_TASKS
+
+class BuilderBot(Bot):
+	def __init__(self, ct:Controller, core_pos: Position, move_dir: Direction):
+		# Initialises the parent class (Bot) to generate the bit boards and inherit the corresponding variables and functions
+		
+		#must generate before calling super()
+		#most to least priority
+		priority_list = [BuilderTask.ATTACK_ENEMY_CORE, BuilderTask.FOUND_CORE, BuilderTask.FIND_ENEMY_CORE,BuilderTask.BUILD_BRIDGE, BuilderTask.ATTACK_ENEMY_BRIDGE, BuilderTask.FOUND_AX_ORE, BuilderTask.FOUND_TI_ORE, BuilderTask.FIND_ORE]
+		#generate lookup table for task priorities
+		self.task_priority = {}
+		for i in range(len(priority_list)):
+			self.task_priority[priority_list[i]] = i
+		
+		super().__init__(ct, EntityType.BUILDER_BOT)
+		self.core_pos = core_pos
+		self.enemy_core_pos:Position = None
+		self.move_dir = move_dir
+		self.target:Position = None
+		self.target_radius_sq = 2
+		self.phase = 0
+		self.do_pathfinding = True
+		
+		# The ordered list of positions and the corresponding bitboard
+		self.bridge_path = []
+		self.bridge_path_index = 0
+		self.bridge_path_board = None
+		self.path = [] # List[Position] - ordered steps from current position to target
+		self.path_index = 0 # How far along the path we are
+		self.path_board = None # Bitboard representation of the path for parallel collision detection
+		self.conveyor_path:list[Position] = []
+		
+		if ct.get_current_round() >= 50:
+			self.add_task(BuilderTask.FIND_ENEMY_CORE, 0)
+		self.add_task(BuilderTask.FIND_ORE, None, True)
+		self.symmetry_positions = [
+			Position((self.map_width-1) - self.core_pos.x, (self.map_height-1) - self.core_pos.y), 
+			Position(self.map_width-1  - self.core_pos.x, self.core_pos.y),
+			Position(self.core_pos.x, self.map_height-1 - self.core_pos.y)]
+		
+		self.symmetry_positions.sort(key=lambda pos: self.chebyshev(ct.get_position(), pos))
+
+	def read_task_marker(self, ct: Controller, entity):
+		read = TaskMarkerData()
+		read.as_int = ct.get_marker_value(entity)
+		if read.date == ct.get_current_round():
+			if self.task:
+				if read.task_type == self.task["type"]and self.task["type"] in DO_ONCE_TASKS and read.task_identifier == self.task["identifier"]:
+					self.task_complete(ct)
+			# TODO: right now identifier is always a position this is jank
+			if read.task_type in DO_ONCE_TASKS:
+				pos_index = read.task_identifier
+				self.clear_bit(self.walkable_board, Position(pos_index % self.map_width, floor(pos_index/self.map_width)))
+		
+			# new_tasks = []
+			# done_tasks = []
+			# for task in self.task_backlog:
+			# 	if read.task_type == task["type"] and read.is_solo and read.identifier == task["identifier"]:
+			# 		done_tasks.append(task)
+			# 	else:
+			# 		new_tasks.append(task)
+
+	def turn_end(self, ct:Controller):
+		super().turn_end(ct)
+		write = TaskMarkerData()
+		write.type = 1
+		write.date = ct.get_current_round()
+		write.task_type = self.task['type']
+		write.task_identifier = self.task['identifier']
+		current_pos = ct.get_position()
+		for x in range(-1,2):
+			for y in range(-1,2):
+				check_pos = Position(current_pos.x+x, current_pos.y+y)
+				if ct.can_place_marker(check_pos):
+					ct.place_marker(check_pos, write.as_int)
+
+	# Static so it can be alled through the class without needing to pass in self
+	@staticmethod
+	def chebyshev(a: Position, b: Position) -> int:
+		"""
+		Chebyshev distance - admissible heuristic (Never overestimates the true path length) for 8-directional movement.
+		"""
+		return max(abs(a.x - b.x), abs(a.y - b.y))
+	
+	def get_neighbours(self, pos: Position):
+		"""
+		Returns walkable neighbour positions (non-wall, non-ore, in-bounds)
+		Ore is excluded as the bots can not walk on ore.
+		"""
+		neighbour_bit_mask = self.direct_neighbour_mask
+		
+		#if we are on the edge, remove the mask that extends beyond that edge
+		if pos.x == 0:
+			neighbour_bit_mask &= ~self.direct_neighbour_vertical_mask
+		elif pos.x == self.map_width-1:
+			neighbour_bit_mask &= ~(self.direct_neighbour_vertical_mask<<2)
+		
+		if pos.y==0:
+			neighbour_bit_mask &= ~self.direct_neighbour_horizontal_mask
+		elif pos.y == self.map_height-1:
+			neighbour_bit_mask &= ~(self.direct_neighbour_horizontal_mask<<(self.map_width*2))
+
+		index = pos.y*self.map_width + pos.x
+		neighbour_bit_mask<<=index
+		# shift to recenter bitmask on index - order is important, else we might delete part of the mask
+		neighbour_bit_mask >>= self.map_width + 1
+		
+		neighbours = (self.walkable_board|(~self.seen_board)) & neighbour_bit_mask
+		while neighbours:
+			(neighbours, nb) = self.pop_lsb(neighbours)
+			yield nb
+
+	def get_bridge_neighbours(self, pos: Position):
+		"""
+		Returns bridge-buildable neighbour positions (non-wall, non-ore, in-bounds)
+		Ore is excluded as the bots can not walk on ore.
+		"""
+		neighbour_bit_mask = self.bridge_neighbour_mask
+
+		#if we are on the edge, remove the mask that extends beyond that edge
+		if pos.x <3:
+			remove_mask = 0
+			for i in range(3-pos.x):
+				remove_mask |= self.bridge_neighbour_vertical_mask<<i
+			neighbour_bit_mask &= ~remove_mask
+		elif pos.x >= self.map_width-3:
+			remove_mask = 0
+			for i in range(3-(self.map_width-1-pos.x)):
+				remove_mask |= self.bridge_neighbour_vertical_mask<<(4+i)
+			neighbour_bit_mask &= ~(remove_mask)
+		
+		if pos.y<3:
+			remove_mask = 0
+			for i in range(3-pos.y):
+				remove_mask |= self.bridge_neighbour_horizontal_mask<<(self.map_width*i)
+			neighbour_bit_mask &= ~remove_mask
+		elif pos.y >= self.map_height-3:
+			remove_mask = 0
+			for i in range(3-(self.map_width-1-pos.y)):
+				remove_mask |= self.bridge_neighbour_horizontal_mask<<(self.map_width*(4+i))
+			neighbour_bit_mask &= ~(remove_mask)
+		index = pos.y*self.map_width + pos.x
+		neighbour_bit_mask<<=index
+		# shift to recenter bitmask on index - order is important, else we might delete part of the mask
+		neighbour_bit_mask >>= self.map_width*3 + 3
+			
+		neighbours = (self.walkable_board|(~self.seen_board)) & neighbour_bit_mask & (~self.enemy_buildings_board) & ~(self.axionite_ores_board | self.titanium_ores_board)
+		while neighbours:
+			(neighbours, nb) = self.pop_lsb(neighbours)
+			yield nb
+
+	def ara(self,ct:Controller, start: Position, goal: Position, timelimit:int, bridge:bool =False):
+		
+		starttime = ct.get_cpu_time_elapsed()
+		neighbour_function = self.get_neighbours
+		if bridge:
+			neighbour_function = self.get_bridge_neighbours
+		counter = 0 
+		open_set = []
+		inconsistent_set = []
+		heapq.heappush(open_set, (0, counter, start))
+		came_from = {}
+		g_score:dict[Position,float] = {start: 0}
+		weight = 2.5
+		current = None
+		target_radius_sq = 0 if bridge else self.target_radius_sq
+		goals = set()
+		for pos in self.positions_in_radius(goal, target_radius_sq):
+			if self.check_bit(self.walkable_board|(~self.seen_board), pos):
+				goals.add(pos)
+				g_score[pos] = float('inf')
+		best_goal_score = float('inf')
+		best_goal_pos = None
+		while weight>=1 and open_set and ct.get_cpu_time_elapsed()-starttime<timelimit:
+			closed_set = set()
+			while (open_set and ct.get_cpu_time_elapsed()-starttime<timelimit):
+				f, _, current = heapq.heappop(open_set)
+				#this is our exit condition
+				if best_goal_score<=f:
+					break
+
+				closed_set.add(current)
+				print(f'C: {current.x} {current.y}, f: {f}, g: {g_score[current]}')
+				for neighbour in neighbour_function(current):
+					
+					# Uniform cost of 1 per step for now
+					# added a cost to build roads (we don't need to worry about this when generating a bridge path)
+					extra_cost = 0
+					if not bridge and not self.check_bit(self.team_buildings_board| self.enemy_buildings_board, neighbour):
+						extra_cost += 0.5
+					# if self.check_bit(self.units_adjacent_board, neighbour):
+					# 	extra_cost+=1
+					tentative_g = g_score[current] + 1 +extra_cost
+					
+					# Checks if this path to the neighbour is better than any previously recorded path (or if there is no recorded path)
+					# The second argument is the default value if neighbour is not in g_score, which is infinity as we want to consider any path to it as better than no path.
+					if tentative_g < g_score.get(neighbour, float('inf')):
+						came_from[neighbour] = current
+						g_score[neighbour] = tentative_g
+						if tentative_g< best_goal_score and neighbour in goals:
+							best_goal_score = tentative_g
+							best_goal_pos = neighbour
+							
+						# Heuristic target: if goal is ore, we aim for adjacency (distance 1),
+						# so we substract 1 from the chebyshev distance to stay admissible.
+						# This is where the magic happens. The heuristic is what differentiates the neighbours. We want to prioritise neighbours that are closer to the target (Chebyshev distance). 
+						if bridge:
+							h = self.chebyshev(neighbour, goal)
+						else:
+							# this has been changed so that we are now aiming for any tile within a radius
+							# the floor part here is always guaranteed to underestimate the chebychev distance of a target so that we remain admissable
+							h = max(0, self.chebyshev(neighbour, goal) - floor(pow(self.target_radius_sq, 0.5)))
+						
+						#here is where the weighted part comes in (we overestimate the score to decrease the number of nodes we need to expand before we reach the end)
+						f_score = tentative_g +weight* h
+						counter += 1
+						
+						if neighbour in closed_set:
+							heapq.heappush(inconsistent_set, (f_score, counter, neighbour))
+						else:
+							heapq.heappush(open_set, (f_score, counter, neighbour))
+			open_set = open_set + inconsistent_set
+			heapq.heapify(open_set)
+			weight-=0.5
+
+			#open_set[0][0] is the least f score in the heap
+			# path_rating = min(weight, g_score[goal]/open_set[0][0])
+		
+		if best_goal_pos:
+			print(f'Chose to pathfind to: {best_goal_pos.x} {best_goal_pos.y}')
+			return self.reconstruct_path(came_from, best_goal_pos)
+		
+		# No path found
+		return None
+
+	def positions_in_radius(self, pos:Position,radius_sq:float):
+		max_diff = floor(radius_sq**0.5)
+		max_y = min(max_diff, self.map_height-1-pos.y)
+		min_y = max(-pos.y, -max_diff)
+		max_x = min(max_diff, self.map_width-1-pos.x)
+		min_x = max(-pos.x, -max_diff)
+		for y in range(min_y, max_y+1):
+			for x in range(min_x, max_x+1):
+				if x**2+y**2 <= radius_sq:
+					yield Position(pos.x+x, pos.y+y)
+
+	def reconstruct_path(self, came_from: dict, current: Position):
+		"""
+		Reconstructs the path from start to current using the came_from map.
+		Returns the path as a list of Positions, excluding the start position.
+		"""
+
+		path = []
+		while current in came_from:
+			path.append(current)
+			current = came_from[current]
+		
+		path.reverse()
+		return path
+	
+	def compute_path(self,ct:Controller, start: Position, goal: Position):
+		"""
+		Runs A* and stores the result as noth a position list and a path bitboard.
+		"""
+		#check if there are actually any points we can pathfind to
+		is_free_space = False
+		for pos in self.positions_in_radius(goal, self.target_radius_sq):
+			if self.check_bit(self.walkable_board|(~self.seen_board), pos):
+				is_free_space = True
+				break
+				
+
+		if not is_free_space:
+			print('start collided')
+			self.reset_path()
+			return False
+
+		result = self.ara(ct, start, goal, 1200, False)
+		if result is None:
+			self.reset_path()
+			return False
+		
+		self.path = result
+		self.path_index = 0
+
+		# Build the path bitboard for collision detection later 
+		self.path_board = 0
+		for pos in self.path:
+			self.path_board = self.set_bit(self.path_board, pos)
+
+		return True
+	
+	def compute_bridge_path(self, ct:Controller, start:Position, goal:Position):
+		"""
+		Runs A* and stores the result as noth a position list and a path bitboard.
+		"""
+		#check if there are actually any points we can pathfind to
+		if not self.check_bit(self.walkable_board|(~self.seen_board), goal):
+			print('start collided bridge')
+			self.reset_path()
+			return False
+		result = self.ara(ct, start, goal, 700, True)
+		if result is None:
+			self.bridge_path = []
+			self.bridge_path_index = 0
+			self.bridge_path_board = 0
+			return False
+		
+		self.bridge_path =[start]+ result
+		self.bridge_path_index = 0
+
+		# Build the path bitboard for collision detection later 
+		self.bridge_path_board = 0
+		for pos in self.bridge_path:
+			self.bridge_path_board = self.set_bit(self.bridge_path_board, pos)
+
+		return True
+
+	def check_path_collisions(self, path, index, bridge=False) -> bool:
+		"""
+		Returns True if any obstacle now overlaps the remaining path.
+		"""
+
+		remaining_board = 0
+		# The : after self.path_index is string slicing to get the remaining path from the current position to the target
+		for pos in path[index:]:
+			remaining_board = self.set_bit(remaining_board, pos)
+
+		# mask away walls
+		mask = ~self.walkable_board & self.seen_board
+		# if we are building a bridge, avoid enemy roads and the core
+		if bridge:
+			# since the last point in the bridge is our target, this could be the core or another bridge, we don't want to consider it for collisions
+			remaining_board = self.clear_bit(remaining_board, path[-1])
+			# don't want to build a bridge over ore
+			mask |= self.titanium_ores_board | self.axionite_ores_board
+			# can't yet build on enemy buildings
+			mask |= self.enemy_buildings_board
+		return (remaining_board & mask) != 0
+
+	def follow_path(self, ct: Controller) -> bool:
+		""" Takes one step along the cached path. Returns True if a step was taken."""
+		if ct.get_move_cooldown() > 0:
+			return False
+		
+		if self.path_index >= len(self.path):
+			return False
+		
+		next_pos = self.path[self.path_index]
+		current_pos = ct.get_position()
+		direction = current_pos.direction_to(next_pos)
+
+		# Build a road on the target if needed
+		if ct.get_action_cooldown() == 0 and ct.can_build_road(next_pos):
+			ct.build_road(next_pos)
+			
+		# Take the step
+		if ct.can_move(direction):
+			ct.move(direction)
+			self.path_index += 1
+			return True
+		
+		return False
+	
+	def find_enemy_core(self, ct: Controller) -> Position | None:
+		"""
+		Scans visible tiles for the enemy core.
+		If found returns the postion of the enemy core.
+		"""
+		enemy_core_pos = None
+
+		for pos in ct.get_nearby_tiles():
+			building_id = ct.get_tile_building_id(pos)
+			if building_id and ct.get_entity_type(building_id) == EntityType.CORE and ct.get_team(building_id) != ct.get_team():
+				enemy_core_pos = pos
+				break	
+		
+		return enemy_core_pos
+	
+	def turn_start(self, ct: Controller):
+		super().turn_start(ct)
+		self.count=0
+		self.debug = False
+		# for i in range(len(self.task_backlog)):
+		# 	t= self.task_backlog[i]
+		# 	print(f'Qd Task no. {i+1}: {t['type']}, Data: {t['data']}')
+		# Update our map with any newly visible terrain
+		self.update_terrain_vision(ct)
+		#check for symmetry
+		if self.map_symmetry == MapSymmetry.UNKNOWN:
+			self.check_symmetry()
+		print(f'Map Symmetry: {MAP_SYMMETRY_PLAINTEXT[self.map_symmetry]}')
+		print(f'Before processing tasks {ct.get_cpu_time_elapsed()} micros')
+		task_time = ct.get_cpu_time_elapsed()
+		keep_processing_tasks = True
+		while (keep_processing_tasks):
+			
+			if self.task and ct.get_global_resources()[0]<50 and self.task['type'] != BuilderTask.BUILD_BRIDGE and ct.get_current_round()<=30:
+				break
+
+			current_pos = ct.get_position()
+			keep_processing_tasks = self.process_tasks(ct)
+			# if we don't want to pathfind
+			if self.target is None or not self.do_pathfinding:
+				print('No target/pathfinding off')
+				continue
+			# if we have a target but no path, compute a path
+			elif not self.path:
+				self.compute_path(ct, current_pos, self.target)
+			# Check if cached path from the previous turn has been blocked
+			elif self.check_path_collisions(self.path, self.path_index):
+				# Path is blocked, need to recompute
+				self.compute_path(ct, current_pos, self.target)
+
+			# If path is valid follow it
+			if self.path:
+				self.follow_path(ct)
+			else:
+				print('No path to follow??')
+			print (f'Task took {ct.get_cpu_time_elapsed()-task_time}μs')
+			task_time = ct.get_cpu_time_elapsed()
+			print(f'Current Target: {self.target}')
+			print(f"Path: {self.path_string(self.path)}")
+		print(f'Bridge Path: {self.path_string(self.bridge_path)}')
+		print(f'Conveyor Path: {self.path_string(self.conveyor_path)}')
+		if self.path:
+			self.draw_path(ct, self.path, self.path_index)
+
+	def draw_path(self, ct:Controller, path, path_index, ):
+		increase = 50
+		col=255
+		for pos in path[path_index:]:
+			col-=increase
+			col = max(col, 0)
+			ct.draw_indicator_dot(pos, col,col,col)
+
+	def process_tasks(self, ct:Controller):
+		"""Processes the current task, returning True if we should continue processing"""
+		# if there are some tasks in the back log and our current task is interruptable
+		original_task = None
+		if self.task and self.task['interruptable'] and self.task_backlog:
+			self.task_backlog.append(self.task)
+			original_task = self.task
+			self.task = None
+		if not self.task:
+			if self.task_backlog:
+				self.sort_task_backlog(ct)
+				self.task = self.task_backlog.pop(0)
+				if not original_task == self.task:
+					if original_task:
+						print(f'Original task interrupted\nOrig: {original_task['type']}, Data: {original_task['data']}, I: {int(original_task["interruptable"])}')
+					self.end_task()
+				else:
+					print('Task was not interrupted')
+				
+		print(f'Task: {self.task['type']}, Data: {self.task['data']}, I: {int(self.task["interruptable"])}')
+		current_pos = ct.get_position()
+		reached_target = not self.target is None and current_pos.distance_squared(self.target) <=self.target_radius_sq
+		self.target: Position
+		return builder_tasks[self.task['type']]['phases'][self.phase](self, ct, reached_target)
+
+	def task_complete(self, ct:Controller):
+		self.end_task()
+		super().task_complete(ct)
+	
+	def end_task(self):
+		"""Clears all the pathfinding and general shenanigans to prep for a new task - different to task_complete in that it does not edit the task"""
+		#reset the paths upon task completion
+		self.target = None
+		self.reset_bridge_path()
+		self.reset_path()
+		self.conveyor_path = []
+		self.phase = 0
+		self.do_pathfinding = True
+
+	def reset_path(self):
+		self.path = []
+		self.path_index = 0
+		self.path_board = 0
+	
+	def reset_bridge_path(self):
+		self.bridge_path = []
+		self.bridge_path_index =0
+		self.bridge_path_board =0
+	
+	def change_target(self, target:Position, radius_sq=2):
+		"""
+		Changes the target to this point resetting the current path, where we stop if we reach any point in the radius.
+		Default behaviour is to aim at an adjacent tile.
+		Note: be careful as we are using radius squared.
+		Use radius_sq=0 if you want to only stop once we are on top of the target and 2 to aim for any adjacent tile.
+		"""
+		self.reset_path()
+		self.target = target
+		self.target_radius_sq = radius_sq
