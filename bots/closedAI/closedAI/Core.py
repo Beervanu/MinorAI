@@ -12,10 +12,13 @@ class Core(Bot):
 		# if round == 50:
 		# 	ct.resign()
 
-		if self.num_spawned < 2 or (self.num_spawned<4 and round>20):
+		if self.num_spawned < 2 or (self.num_spawned<4 and round>15):
+
 			spawn_pos = ct.get_position().add(self.spawn_d)
-			# Rotate 90 degrees for the next spaw so that bots fan out
+			# Rotate 90 degrees for the next spawn so that bots fan out
 			self.spawn_d=self.spawn_d.rotate_left().rotate_left()
+			if not self.num_spawned%2:
+				self.spawn_d=self.spawn_d.rotate_left().rotate_left()
 			if ct.can_spawn(spawn_pos):
 				ct.spawn_builder(spawn_pos)
 				self.num_spawned += 1
