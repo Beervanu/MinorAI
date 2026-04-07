@@ -387,9 +387,9 @@ class BuilderBot(Bot):
 		super().turn_start(ct)
 		self.count=0
 		self.debug = False
-		# for i in range(len(self.task_backlog)):
-		# 	t= self.task_backlog[i]
-		# 	print(f'Qd Task no. {i+1}: {t['type']}, Data: {t['data']}')
+		for i in range(len(self.task_backlog)):
+			t= self.task_backlog[i]
+			print(f'Qd Task no. {i+1}: {t['type']}, Data: {t['data']}')
 		# Update our map with any newly visible terrain
 		self.update_terrain_vision(ct)
 		#check for symmetry

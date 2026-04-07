@@ -34,7 +34,7 @@ def reached_ore(self:BuilderBot, ct:Controller, reached_target:bool):
 	if ct.get_action_cooldown() == 0:
 		b_id = ct.get_tile_building_id(self.target)
 		# if there is a road on top of it
-		if b_id and ct.get_entity_type(b_id) == EntityType.ROAD:
+		if b_id and ct.get_entity_type(b_id) in [EntityType.ROAD, EntityType.MARKER]:
 			#if we are near enough try to destroy it (only works if it is our road)
 			if ct.can_destroy(self.target):
 				ct.destroy(self.target)
@@ -51,13 +51,12 @@ def reached_ore(self:BuilderBot, ct:Controller, reached_target:bool):
 			self.task_complete(ct)
 			return True
 		#there is a harvester on this ore
-		else:
+		elif b_id:
 			# check no one else has already built a conveyor from this ore
 			for dir in CARDINAL_DIRECTIONS:
 				check_pos = self.target.add(dir)
 				if not self.is_valid_position(check_pos):
 					continue
-				#TODO: change to bitboards
 				building_id = ct.get_tile_building_id(check_pos)
 				if building_id:
 					etype = ct.get_entity_type(building_id)
@@ -68,16 +67,16 @@ def reached_ore(self:BuilderBot, ct:Controller, reached_target:bool):
 					
 
 
-		# TODO: build to nearest bridge instead of core - (check if bridge gets congested) - second task to decongest bridges ?
-		all_dir = [self.target.add(d) for d in CARDINAL_DIRECTIONS]
-		all_dir.sort(key=lambda dir: self.chebyshev(self.core_pos, dir))
-		for pos in all_dir:
-			if self.is_valid_position(pos) and self.check_bit(self.walkable_board, pos) and not self.check_bit(self.enemy_buildings_board|self.axionite_ores_board|self.titanium_ores_board, pos):
-				print(f'{pos.x} {pos.y} is walkable - build a bridge here')
-				self.add_task(BuilderTask.BUILD_BRIDGE, pos)
-				break
-		self.task_complete(ct)
-		return True
+			# TODO: build to nearest bridge instead of core - (check if bridge gets congested) - second task to decongest bridges ?
+			all_dir = [self.target.add(d) for d in CARDINAL_DIRECTIONS]
+			all_dir.sort(key=lambda dir: self.chebyshev(self.core_pos, dir))
+			for pos in all_dir:
+				if self.is_valid_position(pos) and self.check_bit(self.walkable_board, pos) and not self.check_bit(self.enemy_buildings_board|self.axionite_ores_board|self.titanium_ores_board, pos):
+					print(f'{pos.x} {pos.y} is walkable - build a bridge here')
+					self.add_task(BuilderTask.BUILD_BRIDGE, pos)
+					break
+			self.task_complete(ct)
+			return True
 	
 
 phases = [set_target, get_to_ore, reached_ore]

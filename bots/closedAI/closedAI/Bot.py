@@ -26,9 +26,13 @@ class Bot:
 		self.done_tasks: list[TaskData] = []
 		# Initialisation of bitboards for different map features
 		self.seen_board = 0
+		self.seen_symmetry_boards = (0,0,0)
 		self.walls_board = 0
+		self.walls_symmetry_boards = (0,0,0)
 		self.axionite_ores_board = 0
+		self.axionite_ores_symmetry_boards = (0,0,0)
 		self.titanium_ores_board = 0
+		self.titanium_ores_symmetry_boards = (0,0,0)
 		self.walkable_board = 0
 		self.team_buildings_board = 0
 		self.enemy_buildings_board = 0
@@ -139,6 +143,26 @@ class Bot:
 		# The second thing is that if the bit at the index provided is already on (is 1) it remains 1 as 1 OR 1 = 1 (Kind of inferred from the first point but idc).
 		return bitboard | bitmask
 	
+	def set_symmetry_bit(self, bitboard:int, symmetry_bitboards:tuple[int,int,int], pos:Position) ->tuple[int, tuple[int,int,int]]:
+		"""Turns the bit ON at a given Position and all its symmetry positions and returns the new boards in the order: (original, rotated, reflect_x, reflect_y)."""
+		# Still maps the input position to the correct index for the bitboard. Nothing has changed here.
+		rotated_bitboard, reflect_x_bitboard , reflect_y_bitboard = symmetry_bitboards
+		index = pos.y * self.map_width + pos.x
+		bitmask = 1 << index
+		# want (map_height-pos.y-1) * self.map_width + (map_width - pos.x-1) - the expression on the next line is equivalent
+		rotated_index = self.map_height*self.map_width - index -1 
+		rotated_bitmask = 1 << rotated_index
+
+		reflect_x_index = pos.y*self.map_width + (self.map_width-pos.x-1)
+		reflect_x_bitmask = 1 << reflect_x_index
+
+		reflect_y_index = (self.map_height - pos.y - 1)*self.map_width + pos.x
+		reflect_y_bitmask = 1 << reflect_y_index
+		# Alright so here we are peforming a logical OR on the bitboard at the index of the tile given.
+		# Two things here. As it is an OR it preserves the preserves the other indices in the board (1 OR 0 = 1, 0 OR 0 = 0).
+		# The second thing is that if the bit at the index provided is already on (is 1) it remains 1 as 1 OR 1 = 1 (Kind of inferred from the first point but idc).
+		return bitboard | bitmask, (rotated_bitboard | rotated_bitmask, reflect_y_bitboard | reflect_y_bitmask,reflect_x_bitboard | reflect_x_bitmask)
+
 	def clear_bit(self, bitboard: int, pos: Position) -> int:
 		"""Turns the bit OFF at the given Postion and returns the new board."""
 		# Need I say anymore?
@@ -185,14 +209,13 @@ class Bot:
 			# The change is we now have a seen board which essentially did what I already did but it a more compact way.
 			env = ct.get_tile_env(pos)
 			if env == Environment.WALL:
-				self.walls_board = self.set_bit(self.walls_board,pos)
+				self.walls_board, self.walls_symmetry_boards = self.set_symmetry_bit(self.walls_board, self.walls_symmetry_boards,pos)
 			elif env == Environment.ORE_TITANIUM:
-				
-				self.titanium_ores_board = self.set_bit(self.titanium_ores_board,pos)
+				self.titanium_ores_board, self.titanium_ores_symmetry_boards = self.set_symmetry_bit(self.titanium_ores_board, self.titanium_ores_symmetry_boards,pos)
 				if is_builder_bot:
 					self.add_task(BuilderTask.FOUND_TI_ORE, pos, True)
 			elif env == Environment.ORE_AXIONITE:
-				self.axionite_ores_board = self.set_bit(self.axionite_ores_board,pos)
+				self.axionite_ores_board, self.axionite_ores_symmetry_boards = self.set_symmetry_bit(self.axionite_ores_board,self.axionite_ores_symmetry_boards,pos)
 				# if isinstance(self, BuilderBot):
 				# 	self.add_task(BuilderTask.FOUND_AX_ORE, pos)
 			
@@ -201,7 +224,7 @@ class Bot:
 					check_pos = pos.add(d)
 					if self.is_valid_position(check_pos):
 						self.ore_adjacent_board = self.set_bit(self.ore_adjacent_board, check_pos)
-			self.seen_board = self.set_bit(self.seen_board, pos)
+			self.seen_board,self.seen_symmetry_boards = self.set_symmetry_bit(self.seen_board,self.seen_symmetry_boards, pos)
 		print(f'Updating environment took {ct.get_cpu_time_elapsed()}μs')
 		#then update buildings
 		for pos in ct.get_nearby_tiles():
@@ -341,18 +364,21 @@ class Bot:
 	def check_symmetry(self) -> None:
 		"""Checks the symmetry of the map based on the currently seen terrain. Sets the map_symmetry variable accordingly."""
 
-		checks = [
-			(MapSymmetry.ROTATIONAL,   self.rotational_flip),
-			(MapSymmetry.REFLECTION_Y, self.horizontal_flip),
-			(MapSymmetry.REFLECTION_X, self.vertical_flip),
-		]
+		# checks = [
+		# 	(MapSymmetry.ROTATIONAL,   self.rotational_flip),
+		# 	(MapSymmetry.REFLECTION_Y, self.horizontal_flip),
+		# 	(MapSymmetry.REFLECTION_X, self.vertical_flip),
+		# ]
 		possible = []
-		for sym, flip_fn in checks:
-			flipped_seen = flip_fn(self.seen_board)
-			both_seen    = self.seen_board & flipped_seen
-			wall_diff    = both_seen & (self.walls_board ^ flip_fn(self.walls_board))
-			ti_ore_diff     = both_seen & (self.titanium_ores_board ^ flip_fn(self.titanium_ores_board))
-			ax_ore_diff     = both_seen & (self.axionite_ores_board ^ flip_fn(self.axionite_ores_board))
+		for sym in MapSymmetry:
+			if sym == MapSymmetry.UNKNOWN:
+				continue
+			# the index in the symmetry boards that corresponds to this symmetry
+			i = sym-1
+			both_seen    = self.seen_board & self.seen_symmetry_boards[i]
+			wall_diff    = both_seen & (self.walls_board ^ self.walls_symmetry_boards[i])
+			ti_ore_diff     = both_seen & (self.titanium_ores_board ^ self.titanium_ores_symmetry_boards[i])
+			ax_ore_diff     = both_seen & (self.axionite_ores_board ^ self.axionite_ores_symmetry_boards[i])
 
 			if (wall_diff | ti_ore_diff | ax_ore_diff) == 0:
 				possible.append(sym)
