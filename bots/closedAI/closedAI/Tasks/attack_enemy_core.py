@@ -12,10 +12,6 @@ task_type = BuilderTask.ATTACK_ENEMY_CORE # some BuilderTask
 def set_target(self: BuilderBot, ct:Controller, reached_target: bool):
 	self.change_target(self.enemy_core_pos, 10)
 	self.phase+=1
-	print("Orig", self.board_string(self.walls_board))
-	print("rotat", self.board_string(self.walls_symmetry_boards[0]))
-	print("reflect y", self.board_string(self.walls_symmetry_boards[1]))
-	print("reflect x", self.board_string(self.walls_symmetry_boards[2])) 
 	return True
 
 def find_bridges(self: BuilderBot, ct:Controller, reached_target: bool):
@@ -30,7 +26,7 @@ def find_bridges(self: BuilderBot, ct:Controller, reached_target: bool):
 			if ct.get_stored_resource(b_id) == ResourceType.TITANIUM:
 				check_pos = pos.add(ct.get_direction(b_id))
 				if self.is_valid_position(check_pos) and self.check_bit(self.walkable_board, check_pos):
-					self.add_task(BuilderTask.PLACE_SENTINEL, pos, False)
+					self.add_task(BuilderTask.PLACE_SENTINEL, check_pos, False)
 					self.task_complete(ct)
 					return True
 

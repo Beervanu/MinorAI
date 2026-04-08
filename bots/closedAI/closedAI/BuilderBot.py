@@ -305,6 +305,7 @@ class BuilderBot(Bot):
 				self.pathfinding_interrupted = True
 			else:
 				#there is just no path to that point
+				print("No path exists")
 				self.task_complete(ct)
 		return None
 
