@@ -26,7 +26,8 @@ class BuilderBot(Bot):
 		self.target_radius_sq = 2
 		self.phase = 0
 		self.do_pathfinding = True
-		self.pathfinding_paused = False
+		self.pathfinding_interrupted = False
+		self.pathfinding_save_state:dict[str, Any] = {'time_out':3}
 
 		# The ordered list of positions and the corresponding bitboard
 		self.bridge_path = []
@@ -156,41 +157,80 @@ class BuilderBot(Bot):
 			(neighbours, nb) = self.pop_lsb(neighbours)
 			yield nb
 
-	def ara(self,ct:Controller, start: Position, goal: Position, timelimit:int, bridge:bool =False):
+	def ara(self,ct:Controller, start: Position, goal: Position, timelimit:int, bridge:bool =False, from_save_state=False):
 		starttime = ct.get_cpu_time_elapsed()
 		neighbour_function = self.get_neighbours
 		if bridge:
 			neighbour_function = self.get_bridge_neighbours
-		counter = 0 
-		open_set = []
-		inconsistent_set = []
-		heapq.heappush(open_set, (0, counter, start))
-		came_from = {}
-		g_score:dict[Position,float] = {start: 0}
-		weight = 2.5
 		current = None
 		target_radius_sq = 0 if bridge else self.target_radius_sq
-		goals = set()
-		for pos in self.positions_in_radius(goal, target_radius_sq):
-			if self.check_bit(self.walkable_board|(~self.seen_board), pos):
-				goals.add(pos)
-				g_score[pos] = float('inf')
 		best_goal_score = float('inf')
 		best_goal_pos = None
-		while weight>=1 and open_set and ct.get_cpu_time_elapsed()-starttime<timelimit:
-			closed_set = set()
+		weight = 2.5
+		if not from_save_state:
+			# can happen occasionally
+			if start.distance_squared(goal) <= target_radius_sq:
+				print("already at target")
+				return None
+			counter = 0 
+			open_set = []
+			inconsistent_set = []
+			heapq.heappush(open_set, (0, counter, start))
+			came_from = {}
+			g_score:dict[Position,float] = {start: 0}
+			goals = set()
+			for pos in self.positions_in_radius(goal, target_radius_sq):
+				if self.check_bit(self.walkable_board|(~self.seen_board), pos):
+					goals.add(pos)
+					g_score[pos] = float('inf')
+			
+		else:
+			print('Pathfinding resumed from last turn')
+			counter = self.pathfinding_save_state['counter']
+			open_set = self.pathfinding_save_state['open_set']
+			inconsistent_set = self.pathfinding_save_state['inconsistent_set']
+			came_from = self.pathfinding_save_state['came_from'] 
+			g_score = self.pathfinding_save_state['g_score'] 
+			weight = self.pathfinding_save_state['weight']
+			goals = self.pathfinding_save_state['goals']
+			goal = self.pathfinding_save_state['goal']
+			start = self.pathfinding_save_state['start']
+			self.pathfinding_save_state['time_out']-=1
+			if self.pathfinding_save_state['time_out'] == 0:
+				# if we really can't find a path just end
+				print("Failed completely to find a path")
+				self.task_complete(ct)
+				return None
+
+		out_of_time = False
+		while weight>=1 and open_set and (not out_of_time):
+			if not from_save_state:
+				closed_set = set()
+			else:
+				from_save_state = False
+				closed_set = self.pathfinding_save_state['closed_set']
 			while (open_set and ct.get_cpu_time_elapsed()-starttime<timelimit):
-				# we failed to find a path, try again next turn
-				# if ct.get_cpu_time_elapsed()-starttime>timelimit or ct.get_cpu_time_elapsed()>1900:
-				# 	self.pathfinding_paused = True
-				# 	return None
+				# we failed to find a path on this run through: save our state in case we need to keep calculating next turn
+				if ct.get_cpu_time_elapsed()-starttime>timelimit or ct.get_cpu_time_elapsed()>1900:
+					out_of_time = True
+					if not bridge:
+						self.pathfinding_save_state['counter'] = counter
+						self.pathfinding_save_state['open_set'] = open_set
+						self.pathfinding_save_state['inconsistent_set'] = inconsistent_set
+						self.pathfinding_save_state['came_from'] = came_from
+						self.pathfinding_save_state['g_score'] = g_score
+						self.pathfinding_save_state['weight'] = weight
+						self.pathfinding_save_state['goals'] = goals
+						self.pathfinding_save_state['goal'] = goal
+						self.pathfinding_save_state['start'] = start
+						self.pathfinding_save_state['closed_set'] = closed_set
+					break
 				f, _, current = heapq.heappop(open_set)
 				#this is our exit condition
 				if best_goal_score<=f:
 					break
 
 				closed_set.add(current)
-				print(f'C: {current.x} {current.y}, f: {f}, g: {g_score[current]}')
 				for neighbour in neighbour_function(current):
 					
 					# Uniform cost of 1 per step for now
@@ -240,8 +280,14 @@ class BuilderBot(Bot):
 			print(f'Chose to pathfind to: {best_goal_pos.x} {best_goal_pos.y}')
 			return self.reconstruct_path(came_from, best_goal_pos)
 		
-		# No path found save our state:
-		
+		# No path found, set the pathfinding interrupted flag:
+		if not bridge:
+			if out_of_time:
+				print('Pathfinding was interrupted, will resume next turn')
+				self.pathfinding_interrupted = True
+			else:
+				#there is just no path to that point
+				self.task_complete(ct)
 		return None
 
 	def positions_in_radius(self, pos:Position,radius_sq:float):
@@ -402,9 +448,14 @@ class BuilderBot(Bot):
 			self.check_symmetry()
 		print(f'Map Symmetry: {MAP_SYMMETRY_PLAINTEXT[self.map_symmetry]}')
 		print(f'Before processing tasks {ct.get_cpu_time_elapsed()} micros')
+		if self.pathfinding_interrupted:
+			self.pathfinding_interrupted = False
+			
+			#doesn't matter what arguments we put in for goal and start, as we are recovering the state from the saved one anyway
+			self.ara(ct, Position(0,0), Position(0,0), 1000, from_save_state=True)
 		task_time = ct.get_cpu_time_elapsed()
 		keep_processing_tasks = True
-		while (keep_processing_tasks):
+		while (keep_processing_tasks and not self.pathfinding_interrupted):
 			
 			if self.task and ct.get_global_resources()[0]<50 and self.task['type'] != BuilderTask.BUILD_BRIDGE and ct.get_current_round()<=30:
 				break
@@ -464,7 +515,7 @@ class BuilderBot(Bot):
 				else:
 					print('Task was not interrupted')
 				
-		print(f'Task: {self.task['type']}, Data: {self.task['data']}, I: {int(self.task["interruptable"])}')
+		print(f'Task: {self.task['type']}, Data: {self.task['data']}, P: {self.phase}')
 		current_pos = ct.get_position()
 		reached_target = not self.target is None and current_pos.distance_squared(self.target) <=self.target_radius_sq
 		self.target: Position
@@ -472,6 +523,8 @@ class BuilderBot(Bot):
 
 	def task_complete(self, ct:Controller):
 		self.end_task()
+		if self.task['type'] == BuilderTask.FIND_ORE:
+			self.add_task(BuilderTask.FIND_ORE, None, True)
 		super().task_complete(ct)
 	
 	def end_task(self):
@@ -483,6 +536,8 @@ class BuilderBot(Bot):
 		self.conveyor_path = []
 		self.phase = 0
 		self.do_pathfinding = True
+		self.pathfinding_interrupted = False
+		self.pathfinding_save_state = {'time_out':3}
 
 	def reset_path(self):
 		self.path = []

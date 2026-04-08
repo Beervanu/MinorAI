@@ -277,7 +277,7 @@ class Bot:
 
 	def turn_end(self, ct:Controller):
 		if ct.get_cpu_time_elapsed()>2000:
-			eprint('Lagging, Round:', ct.get_current_round())
+			eprint('Lagging, Round:', ct.get_current_round(), 'Bot:', ct.get_entity_type())
 
 	def get_task_identifier(self, task:Task, data:Any):
 		identifier = 0

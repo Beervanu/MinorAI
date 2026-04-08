@@ -125,7 +125,7 @@ def choose_bridge_type(self:BuilderBot, ct:Controller, reached_target:bool):
 							#if we are able to build a full conveyor to the next point
 							if current_pos == next_bridge_point:
 								#turn off normal path finding
-								self.do_pathfinding = True
+								self.do_pathfinding = False
 								self.phase+=1
 								return True
 				self.conveyor_path = []
