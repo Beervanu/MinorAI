@@ -1,8 +1,8 @@
-from cambc import Controller, Position, Direction, EntityType
-from .Tasktypes import BuilderTask
+from cambc import Controller, Position, Direction, EntityType, GameConstants
+from .Tasktypes import BuilderTask, TaskData
 from .Markers import TaskMarkerData
 import heapq
-from math import floor
+from math import floor, ceil
 from .Bot import *
 from .Tasks import builder_tasks, DO_ONCE_TASKS
 
@@ -12,7 +12,7 @@ class BuilderBot(Bot):
 		
 		#must generate before calling super()
 		#most to least priority
-		priority_list = [BuilderTask.ATTACK_ENEMY_CORE, BuilderTask.FOUND_CORE, BuilderTask.FIND_ENEMY_CORE,BuilderTask.BUILD_BRIDGE, BuilderTask.ATTACK_ENEMY_BRIDGE, BuilderTask.FOUND_AX_ORE, BuilderTask.FOUND_TI_ORE, BuilderTask.FIND_ORE]
+		priority_list = [BuilderTask.ATTACK_ENEMY_CORE, BuilderTask.FOUND_CORE, BuilderTask.FIND_ENEMY_CORE,BuilderTask.BUILD_BRIDGE, BuilderTask.PLACE_SENTINEL, BuilderTask.FOUND_AX_ORE, BuilderTask.FOUND_TI_ORE, BuilderTask.FIND_ORE]
 		#generate lookup table for task priorities
 		self.task_priority = {}
 		for i in range(len(priority_list)):
@@ -20,6 +20,14 @@ class BuilderBot(Bot):
 		
 		super().__init__(ct, EntityType.BUILDER_BOT)
 		self.core_pos = core_pos
+		self.core_attack_range_mask = 0
+		self.core_attack_range_symmetry_masks = (0,0,0)
+		attack_range = ceil((GameConstants.SENTINEL_VISION_RADIUS_SQ)**0.5)
+		for x in range(-attack_range, attack_range+1):
+			for y in range(-attack_range, attack_range+1):
+				check_pos = Position(self.core_pos.x+x, self.core_pos.y+y)
+				if self.is_valid_position(check_pos) and check_pos.distance_squared(self.core_pos)<=GameConstants.SENTINEL_VISION_RADIUS_SQ:
+					self.core_attack_range_mask, self.core_attack_range_symmetry_masks = self.set_symmetry_bit(self.core_attack_range_mask,self.core_attack_range_symmetry_masks, check_pos)
 		self.enemy_core_pos:Position = None
 		self.move_dir = move_dir
 		self.target:Position = None
@@ -47,6 +55,16 @@ class BuilderBot(Bot):
 			Position(self.core_pos.x, self.map_height-1 - self.core_pos.y)]
 		
 		self.symmetry_positions.sort(key=lambda pos: self.chebyshev(ct.get_position(), pos))
+
+	def get_task_secondary_priority(self, ct: Controller, task: TaskData):
+		prio = float('inf')
+		match task['type']:
+			case BuilderTask.FOUND_TI_ORE | BuilderTask.FOUND_AX_ORE:
+				prio = ct.get_position().distance_squared(task['data'])
+			case BuilderTask.PLACE_SENTINEL:
+				if self.enemy_core_pos:
+					prio = self.enemy_core_pos.distance_squared(task['data'])
+		return prio
 
 	def read_task_marker(self, ct: Controller, entity):
 		read = TaskMarkerData()
@@ -434,6 +452,12 @@ class BuilderBot(Bot):
 		
 		return enemy_core_pos
 	
+	def check_symmetry(self) -> None:
+		super().check_symmetry()
+		if self.map_symmetry:
+			self.enemy_core_pos = self.apply_symmetry(self.core_pos)
+	
+
 	def turn_start(self, ct: Controller):
 		super().turn_start(ct)
 		self.count=0

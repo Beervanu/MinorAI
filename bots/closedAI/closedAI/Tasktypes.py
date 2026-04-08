@@ -9,7 +9,7 @@ class BuilderTask(IntEnum):
 	GOTO_ENEMY_CORE = 5
 	ATTACK_ENEMY_CORE = 6
 	FOUND_CORE = 7
-	ATTACK_ENEMY_BRIDGE = 8
+	PLACE_SENTINEL = 8
 
 type Task = BuilderTask 
 class TaskData(TypedDict):

@@ -21,12 +21,12 @@ class Core(Bot):
 				ct.spawn_builder(spawn_pos)
 				self.num_spawned += 1
 		
-		# if  ct.get_global_resources()[0]>2000:
-		# 	# Spawn a bot with the find bot task to start scouting for ore and the enemy core
-		# 	spawn_pos = ct.get_position().add(self.spawn_d) 
-		# 	if ct.can_spawn(spawn_pos):
-		# 		ct.spawn_builder(spawn_pos)
-		# 		self.num_spawned += 1
+		if  round>= 50 and self.num_spawned<6:
+			# Spawn a bot with the find bot task to start scouting for ore and the enemy core
+			spawn_pos = ct.get_position().add(self.spawn_d) 
+			if ct.can_spawn(spawn_pos):
+				ct.spawn_builder(spawn_pos)
+				self.num_spawned += 1
 		
 		for ent in ct.get_nearby_entities():
 			if ct.get_entity_type(ent) == EntityType.MARKER and ct.get_team() == ct.get_team(ent):

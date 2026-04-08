@@ -41,6 +41,7 @@ class Bot:
 		self.ore_adjacent_board = 0
 		self.seen_this_round_board = 0
 		self.team_harvesters_board = 0
+		self.enemy_conveyor_board = 0
 		# 1 1 1
 		# 1 0 1 mask
 		# 1 1 1 
@@ -68,7 +69,9 @@ class Bot:
 		self.map_symmetry = MapSymmetry.UNKNOWN
 
 		self.central_marker_data = CentralMarkerData()
-
+		self.possible_map_symmetries = [MapSymmetry.REFLECTION_Y, MapSymmetry.REFLECTION_X]
+		if self.map_height == self.map_width:
+			self.possible_map_symmetries.append(MapSymmetry.ROTATIONAL)
 		# What's a bitboard you ask? Well look no further Motion has got you covered.
 		# Essentially we map every tile on the map to a index on a binary number
 		# So if we had a 4 tile map a bitboard would look something like 0110 where tile 1 is assigned the value 0 and tile 3 is assigned 1
@@ -153,15 +156,15 @@ class Bot:
 		rotated_index = self.map_height*self.map_width - index -1 
 		rotated_bitmask = 1 << rotated_index
 
-		reflect_x_index = pos.y*self.map_width + (self.map_width-pos.x-1)
-		reflect_x_bitmask = 1 << reflect_x_index
-
-		reflect_y_index = (self.map_height - pos.y - 1)*self.map_width + pos.x
+		reflect_y_index = pos.y*self.map_width + (self.map_width-pos.x-1)
 		reflect_y_bitmask = 1 << reflect_y_index
+
+		reflect_x_index = (self.map_height - pos.y - 1)*self.map_width + pos.x
+		reflect_x_bitmask = 1 << reflect_x_index
 		# Alright so here we are peforming a logical OR on the bitboard at the index of the tile given.
 		# Two things here. As it is an OR it preserves the preserves the other indices in the board (1 OR 0 = 1, 0 OR 0 = 0).
 		# The second thing is that if the bit at the index provided is already on (is 1) it remains 1 as 1 OR 1 = 1 (Kind of inferred from the first point but idc).
-		return bitboard | bitmask, (rotated_bitboard | rotated_bitmask, reflect_y_bitboard | reflect_y_bitmask,reflect_x_bitboard | reflect_x_bitmask)
+		return bitboard | bitmask, (rotated_bitboard | rotated_bitmask, reflect_x_bitboard | reflect_x_bitmask, reflect_y_bitboard | reflect_y_bitmask)
 
 	def clear_bit(self, bitboard: int, pos: Position) -> int:
 		"""Turns the bit OFF at the given Postion and returns the new board."""
@@ -216,8 +219,6 @@ class Bot:
 					self.add_task(BuilderTask.FOUND_TI_ORE, pos, True)
 			elif env == Environment.ORE_AXIONITE:
 				self.axionite_ores_board, self.axionite_ores_symmetry_boards = self.set_symmetry_bit(self.axionite_ores_board,self.axionite_ores_symmetry_boards,pos)
-				# if isinstance(self, BuilderBot):
-				# 	self.add_task(BuilderTask.FOUND_AX_ORE, pos)
 			
 			if env == Environment.ORE_AXIONITE or env == Environment.ORE_TITANIUM:
 				for d in CARDINAL_DIRECTIONS:
@@ -248,6 +249,7 @@ class Bot:
 			self.enemy_buildings_board= self.clear_bit(self.enemy_buildings_board, pos)
 			self.team_bridges_board = self.clear_bit(self.team_bridges_board,pos)
 			self.team_harvesters_board = self.clear_bit(self.team_bridges_board,pos)
+			self.enemy_conveyor_board= self.clear_bit(self.enemy_conveyor_board, pos)
 			building_id = ct.get_tile_building_id(pos)
 			if building_id:
 				etype = ct.get_entity_type(building_id)
@@ -266,8 +268,10 @@ class Bot:
 					else:
 						self.enemy_buildings_board= self.set_bit(self.enemy_buildings_board, pos)
 						if etype in CONVEYOR_ENTITIES:
-							if self.check_bit(self.ore_adjacent_board, pos) and is_builder_bot:
-								self.add_task(BuilderTask.ATTACK_ENEMY_BRIDGE, pos)
+							# if self.check_bit(self.ore_adjacent_board, pos) and is_builder_bot:
+							# 	self.add_task(BuilderTask.PLACE_SENTINEL, pos)
+							if etype != EntityType.BRIDGE:
+								self.enemy_conveyor_board = self.set_bit(self.enemy_conveyor_board, pos)
 
 
 		print(f'Updating buildings took {ct.get_cpu_time_elapsed()}μs')
@@ -282,7 +286,7 @@ class Bot:
 	def get_task_identifier(self, task:Task, data:Any):
 		identifier = 0
 		match task:
-			case BuilderTask.FOUND_AX_ORE | BuilderTask.FOUND_TI_ORE | BuilderTask.BUILD_BRIDGE | BuilderTask.ATTACK_ENEMY_BRIDGE:
+			case BuilderTask.FOUND_AX_ORE | BuilderTask.FOUND_TI_ORE | BuilderTask.BUILD_BRIDGE | BuilderTask.PLACE_SENTINEL:
 				identifier = data.y*self.map_width + data.x
 
 		return identifier
@@ -313,9 +317,6 @@ class Bot:
 
 	def get_task_secondary_priority(self, ct:Controller, task:TaskData):
 		prio = float('inf')
-		match task['type']:
-			case BuilderTask.FOUND_TI_ORE | BuilderTask.FOUND_AX_ORE:
-				prio = ct.get_position().distance_squared(task['data'])
 
 		return prio
 
@@ -364,9 +365,7 @@ class Bot:
 	def check_symmetry(self) -> None:
 		"""Checks the symmetry of the map based on the currently seen terrain. Sets the map_symmetry variable accordingly."""
 		possible = []
-		for sym in MapSymmetry:
-			if sym == MapSymmetry.UNKNOWN:
-				continue
+		for sym in self.possible_map_symmetries:
 			# the index in the symmetry boards that corresponds to this symmetry
 			i = sym-1
 			both_seen    = self.seen_board & self.seen_symmetry_boards[i]
@@ -376,7 +375,7 @@ class Bot:
 
 			if (wall_diff | ti_ore_diff | ax_ore_diff) == 0:
 				possible.append(sym)
-
+		self.possible_map_symmetries = possible
 		if len(possible) == 1:
 			self.map_symmetry = possible[0]
 
