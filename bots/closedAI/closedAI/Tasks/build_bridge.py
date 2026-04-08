@@ -104,31 +104,31 @@ def choose_bridge_type(self:BuilderBot, ct:Controller, reached_target:bool):
 					case -1:
 						y_dir = Direction.NORTH
 			#if we are going diagonal, skip building conveyors and just use a bridge
-			if not(abs(y_diff) == 2 and abs(x_diff)==2):
-				current_pos = self.target
-				self.conveyor_path = [self.target]
-				for i in range(self.chebyshev(next_bridge_point, self.target)):
-					check_directions = []
-					if next_bridge_point.y-self.target.y:
-						check_directions.append(y_dir)
-					if next_bridge_point.x-self.target.x:
-						check_directions.append(x_dir)
-					
-					for dir in check_directions:
-						check_pos =current_pos.add(dir)
-						if not self.is_valid_position(check_pos):
-							continue
+			
+			current_pos = self.target
+			self.conveyor_path = [self.target]
+			for i in range(self.chebyshev(next_bridge_point, self.target)):
+				check_directions = []
+				if next_bridge_point.y-self.target.y:
+					check_directions.append(y_dir)
+				if next_bridge_point.x-self.target.x:
+					check_directions.append(x_dir)
+				
+				for dir in check_directions:
+					check_pos =current_pos.add(dir)
+					if not self.is_valid_position(check_pos):
+						continue
 
-						if self.check_bit(self.walkable_board & ~(self.axionite_ores_board|self.titanium_ores_board|self.enemy_buildings_board), check_pos):
-							self.conveyor_path.append(check_pos)
-							current_pos = check_pos
-							#if we are able to build a full conveyor to the next point
-							if current_pos == next_bridge_point:
-								#turn off normal path finding
-								self.do_pathfinding = False
-								self.phase+=1
-								return True
-				self.conveyor_path = []
+					if self.check_bit(self.walkable_board & ~(self.axionite_ores_board|self.titanium_ores_board|self.enemy_buildings_board), check_pos):
+						self.conveyor_path.append(check_pos)
+						current_pos = check_pos
+						#if we are able to build a full conveyor to the next point
+						if current_pos == next_bridge_point:
+							#turn off normal path finding
+							self.do_pathfinding = False
+							self.phase+=1
+							return True
+			self.conveyor_path = []
 
 			#if we failed building conveyors, try to build a bridge instead
 			if ct.can_build_bridge(self.target, next_bridge_point):
