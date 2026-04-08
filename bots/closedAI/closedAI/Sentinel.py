@@ -34,12 +34,14 @@ class SentinelBot(Bot):
 			for ent in ct.get_nearby_entities():
 				pos = ct.get_position(ent)
 				if ct.get_team(ent) != self.team and self.check_bit(self.attack_mask, pos) and ct.get_entity_type(ent) !=EntityType.HARVESTER:
-					if self.attack(ct, pos):
-						break
+					builder_id = ct.get_tile_builder_bot_id(pos)
+					if builder_id and ct.get_team(builder_id) != self.team:
+						if self.attack(ct, pos):
+							break
 	
 	def attack(self, ct:Controller, pos:Position):
 		"""Tries to attack the position"""
-		if ct.can_fire(pos):
+		if ct.can_fire(pos) :
 			ct.fire(pos)
 			return True
 		return False
