@@ -363,12 +363,6 @@ class Bot:
 	
 	def check_symmetry(self) -> None:
 		"""Checks the symmetry of the map based on the currently seen terrain. Sets the map_symmetry variable accordingly."""
-
-		# checks = [
-		# 	(MapSymmetry.ROTATIONAL,   self.rotational_flip),
-		# 	(MapSymmetry.REFLECTION_Y, self.horizontal_flip),
-		# 	(MapSymmetry.REFLECTION_X, self.vertical_flip),
-		# ]
 		possible = []
 		for sym in MapSymmetry:
 			if sym == MapSymmetry.UNKNOWN:

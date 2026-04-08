@@ -26,7 +26,8 @@ class BuilderBot(Bot):
 		self.target_radius_sq = 2
 		self.phase = 0
 		self.do_pathfinding = True
-		
+		self.pathfinding_paused = False
+
 		# The ordered list of positions and the corresponding bitboard
 		self.bridge_path = []
 		self.bridge_path_index = 0
@@ -156,7 +157,6 @@ class BuilderBot(Bot):
 			yield nb
 
 	def ara(self,ct:Controller, start: Position, goal: Position, timelimit:int, bridge:bool =False):
-		
 		starttime = ct.get_cpu_time_elapsed()
 		neighbour_function = self.get_neighbours
 		if bridge:
@@ -180,6 +180,10 @@ class BuilderBot(Bot):
 		while weight>=1 and open_set and ct.get_cpu_time_elapsed()-starttime<timelimit:
 			closed_set = set()
 			while (open_set and ct.get_cpu_time_elapsed()-starttime<timelimit):
+				# we failed to find a path, try again next turn
+				# if ct.get_cpu_time_elapsed()-starttime>timelimit or ct.get_cpu_time_elapsed()>1900:
+				# 	self.pathfinding_paused = True
+				# 	return None
 				f, _, current = heapq.heappop(open_set)
 				#this is our exit condition
 				if best_goal_score<=f:
@@ -236,7 +240,8 @@ class BuilderBot(Bot):
 			print(f'Chose to pathfind to: {best_goal_pos.x} {best_goal_pos.y}')
 			return self.reconstruct_path(came_from, best_goal_pos)
 		
-		# No path found
+		# No path found save our state:
+		
 		return None
 
 	def positions_in_radius(self, pos:Position,radius_sq:float):
