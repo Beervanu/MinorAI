@@ -91,7 +91,7 @@ def place_sentinel(self: BuilderBot, ct:Controller, reached_target: bool):
 			ct.build_sentinel(self.target, build_dir)
 			self.task_complete(ct)
 
-def is_valid(self:BuilderBot, task:TaskData)->bool:
+def is_valid(self:BuilderBot,ct:Controller, task:TaskData)->bool:
 	return bool(self.check_bit(self.connected_region, task['data']))
 
 phases = [set_target, attack, place_sentinel]

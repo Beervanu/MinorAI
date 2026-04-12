@@ -16,9 +16,15 @@ def set_target(self: BuilderBot, ct:Controller, reached_target: bool):
 	if enemy_core_pos:
 		self.enemy_core_pos = enemy_core_pos
 		# If it witnin visible range, set it as the target and switch to attack task
-		#TODO need to change the map symmetry here based on the position
 		self.change_target(self.enemy_core_pos, 9)
-		self.add_task(BuilderTask.ATTACK_ENEMY_CORE, self.core_pos)
+		if self.core_pos.x == enemy_core_pos.x:
+			self.map_symmetry = MapSymmetry.REFLECTION_Y
+		elif self.core_pos.y == enemy_core_pos.y:
+			self.map_symmetry = MapSymmetry.REFLECTION_X
+		else:
+			self.map_symmetry = MapSymmetry.ROTATIONAL
+
+		self.add_task(ct,BuilderTask.ATTACK_ENEMY_CORE, self.core_pos)
 		self.task_complete(ct)
 		return True
 	else:
@@ -26,7 +32,7 @@ def set_target(self: BuilderBot, ct:Controller, reached_target: bool):
 		# This is based on the fact that the map will always be symmetric with respect to the center either by either rotation or reflection, so the enemy core must be in one of the 3 positions that are symmetric to our core position.
 		
 		if self.map_symmetry != MapSymmetry.UNKNOWN:
-			self.add_task(BuilderTask.ATTACK_ENEMY_CORE, self.core_pos)
+			self.add_task(ct,BuilderTask.ATTACK_ENEMY_CORE, self.core_pos)
 			self.task_complete(ct)
 			return False
 				
@@ -48,13 +54,13 @@ def go_to_symmetry_point(self: BuilderBot, ct:Controller, reached_target: bool):
 		# We have reached one of the possible symmetry positions and the core is not there but we have ascertained the symmetry of the map, so we can deduce the position of the enemy core based on our core position and the map symmetry and switch to attack task
 		else:
 
-			self.add_task(BuilderTask.ATTACK_ENEMY_CORE, self.core_pos)
+			self.add_task(ct,BuilderTask.ATTACK_ENEMY_CORE, self.core_pos)
 			self.task_complete(ct)
 	else:
 		# Still trying to reach the target to check for the core, keep processing this task but also check for symmetry as we go to potentially speed up the process
 		if self.map_symmetry != MapSymmetry.UNKNOWN:
 			# We have ascertained the symmetry of the map, so we can deduce the position of the enemy core based on our core position and the map symmetry and switch to attack task
-			self.add_task(BuilderTask.ATTACK_ENEMY_CORE, self.enemy_core_pos)
+			self.add_task(ct,BuilderTask.ATTACK_ENEMY_CORE, self.enemy_core_pos)
 			self.task_complete(ct)
 phases = [set_target, go_to_symmetry_point]
 do_once = False

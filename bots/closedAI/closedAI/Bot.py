@@ -213,7 +213,7 @@ class Bot:
 			elif env == Environment.ORE_TITANIUM:
 				self.titanium_ores_board, self.titanium_ores_symmetry_boards = self.set_symmetry_bit(self.titanium_ores_board, self.titanium_ores_symmetry_boards,pos)
 				if is_builder_bot:
-					self.add_task(BuilderTask.FOUND_TI_ORE, pos, True)
+					self.add_task(ct,BuilderTask.FOUND_TI_ORE, pos, True)
 			elif env == Environment.ORE_AXIONITE:
 				self.axionite_ores_board, self.axionite_ores_symmetry_boards = self.set_symmetry_bit(self.axionite_ores_board,self.axionite_ores_symmetry_boards,pos)
 			
@@ -269,9 +269,11 @@ class Bot:
 						self.enemy_buildings_board= self.set_bit(self.enemy_buildings_board, pos)
 						if etype in CONVEYOR_ENTITIES:
 							if self.ore_adjacent_board&pos_bitmask and is_builder_bot:
-								self.add_task(BuilderTask.PLACE_SENTINEL, pos)
+								self.add_task(ct,BuilderTask.PLACE_SENTINEL, pos)
 							if etype != EntityType.BRIDGE:
 								self.enemy_conveyor_board |= pos_bitmask
+						elif etype in TURRET_ENTITIES:
+							self.add_task(ct,BuilderTask.CUTOFF_ENEMY_TURRET, pos)
 
 
 		print(f'Updating buildings took {ct.get_cpu_time_elapsed()}μs')
@@ -309,12 +311,12 @@ class Bot:
 
 		return identifier
 
-	def add_task(self, task: Task, data: Any, interruptable=False)->bool:
+	def add_task(self, ct:Controller, task: Task, data: Any, interruptable=False)->bool:
 		"""Adds the given task, while checking whether it is valid, or already done"""
 
 		identifier = self.get_task_identifier(task, data)
 		taskdata:TaskData = {"type":task, "data":data, "identifier": identifier, "interruptable": interruptable, "uid":self.task_num}
-		if not builder_tasks[task]['is_valid'](self, taskdata):
+		if not builder_tasks[task]['is_valid'](self,ct,taskdata):
 			return False
 		if task in DO_ONCE_TASKS:
 			check_tasks = self.done_tasks+self.task_backlog
@@ -348,7 +350,7 @@ class Bot:
 	def cull_task_backlog(self, ct:Controller):
 		new_backlog = []
 		for task in self.task_backlog:
-			if builder_tasks[task['type']]['is_valid'](self, task):
+			if builder_tasks[task['type']]['is_valid'](self,ct,task):
 				new_backlog.append(task)
 			elif task['type'] in DO_ONCE_TASKS:
 				self.done_tasks.append(task)

@@ -26,11 +26,11 @@ def find_bridges(self: BuilderBot, ct:Controller, reached_target: bool):
 			if ct.get_stored_resource(b_id) == ResourceType.TITANIUM:
 				check_pos = pos.add(ct.get_direction(b_id))
 				if self.is_valid_position(check_pos) and self.check_bit(self.walkable_board, check_pos):
-					self.add_task(BuilderTask.PLACE_SENTINEL, check_pos, False)
+					self.add_task(ct,BuilderTask.PLACE_SENTINEL, check_pos, False)
 					self.task_complete(ct)
 					return True
 
-def is_valid(self:BuilderBot, task:TaskData):
+def is_valid(self:BuilderBot,ct:Controller, task:TaskData):
 	return not self.enemy_core_pos is None
 
 phases = [set_target, find_bridges]

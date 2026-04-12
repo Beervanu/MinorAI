@@ -197,7 +197,7 @@ def build_conveyors(self:BuilderBot, ct:Controller, reached_target:bool):
 				self.phase-=1
 				return False
 			
-def is_valid(self:BuilderBot, task:TaskData)->bool:
+def is_valid(self:BuilderBot,ct:Controller, task:TaskData)->bool:
 	print(task['data'])
 	return bool(self.check_bit(self.connected_region, task['data']))
 

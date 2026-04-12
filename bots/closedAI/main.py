@@ -4,6 +4,7 @@ from closedAI.Bot import Bot
 from closedAI.Core import Core
 from closedAI.BuilderBot import BuilderBot
 from closedAI.Sentinel import SentinelBot
+from closedAI.Gunner import GunnerBot
 
 class Player:
 	def __init__(self):
@@ -27,6 +28,8 @@ class Player:
 				self.bot = BuilderBot(ct, core_pos, move_dir)
 			elif etype == EntityType.SENTINEL:
 				self.bot = SentinelBot(ct)
+			elif etype==EntityType.GUNNER:
+				self.bot = GunnerBot(ct)
 			
 			self.first_turn = False
         

@@ -1,15 +1,17 @@
 from enum import IntEnum
 from typing import TypedDict, Any
+# least to highest priority
 class BuilderTask(IntEnum):
 	FIND_ORE = 0
 	BUILD_BRIDGE = 1
 	FOUND_TI_ORE = 2
 	FOUND_AX_ORE = 3
 	FIND_ENEMY_CORE = 4
-	GOTO_ENEMY_CORE = 5
-	ATTACK_ENEMY_CORE = 6
-	FOUND_CORE = 7
-	PLACE_SENTINEL = 8
+	ATTACK_ENEMY_CORE = 5
+	FOUND_CORE = 6
+	PLACE_SENTINEL = 7
+	CUTOFF_ENEMY_TURRET = 8
+
 
 type Task = BuilderTask 
 class TaskData(TypedDict):

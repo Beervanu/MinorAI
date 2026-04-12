@@ -13,7 +13,7 @@ class BuilderBot(Bot):
 		
 		#must generate before calling super()
 		#most to least priority
-		priority_list = [BuilderTask.ATTACK_ENEMY_CORE, BuilderTask.FOUND_CORE, BuilderTask.FIND_ENEMY_CORE,BuilderTask.BUILD_BRIDGE, BuilderTask.PLACE_SENTINEL, BuilderTask.FOUND_AX_ORE, BuilderTask.FOUND_TI_ORE, BuilderTask.FIND_ORE]
+		priority_list = [BuilderTask.ATTACK_ENEMY_CORE, BuilderTask.CUTOFF_ENEMY_TURRET, BuilderTask.FOUND_CORE, BuilderTask.FIND_ENEMY_CORE,BuilderTask.BUILD_BRIDGE, BuilderTask.PLACE_SENTINEL, BuilderTask.FOUND_AX_ORE, BuilderTask.FOUND_TI_ORE, BuilderTask.FIND_ORE]
 		#generate lookup table for task priorities
 		self.task_priority = {}
 		for i in range(len(priority_list)):
@@ -48,8 +48,8 @@ class BuilderBot(Bot):
 		self.going_clockwise = True
 		self.closest_distance_to_target_reached= float('inf')
 		if ct.get_current_round() >= 50:
-			self.add_task(BuilderTask.FIND_ENEMY_CORE, 0)
-		self.add_task(BuilderTask.FIND_ORE, None, True)
+			self.add_task(ct, BuilderTask.FIND_ENEMY_CORE, 0)
+		self.add_task(ct,BuilderTask.FIND_ORE, None, True)
 		self.symmetry_positions = [
 			Position((self.map_width-1) - self.core_pos.x, (self.map_height-1) - self.core_pos.y), 
 			Position(self.map_width-1  - self.core_pos.x, self.core_pos.y),
@@ -78,14 +78,6 @@ class BuilderBot(Bot):
 			if read.task_type in DO_ONCE_TASKS:
 				pos_index = read.task_identifier
 				self.clear_bit(self.walkable_board, Position(pos_index % self.map_width, floor(pos_index/self.map_width)))
-		
-			# new_tasks = []
-			# done_tasks = []
-			# for task in self.task_backlog:
-			# 	if read.task_type == task["type"] and read.is_solo and read.identifier == task["identifier"]:
-			# 		done_tasks.append(task)
-			# 	else:
-			# 		new_tasks.append(task)
 
 	def turn_end(self, ct:Controller):
 		super().turn_end(ct)
@@ -495,8 +487,8 @@ class BuilderBot(Bot):
 		keep_processing_tasks = True
 		while (keep_processing_tasks and not self.pathfinding_interrupted):
 			
-			if self.task and ct.get_global_resources()[0]<50 and self.task['type'] != BuilderTask.BUILD_BRIDGE and ct.get_current_round()<=30:
-				break
+			if self.task and self.task['type'] != BuilderTask.CUTOFF_ENEMY_TURRET and ct.get_global_resources()<ct.get_gunner_cost():
+				return
 
 			current_pos = ct.get_position()
 			keep_processing_tasks = self.process_tasks(ct)
@@ -576,7 +568,7 @@ class BuilderBot(Bot):
 	def task_complete(self, ct:Controller):
 		self.end_task()
 		if self.task['type'] == BuilderTask.FIND_ORE:
-			self.add_task(BuilderTask.FIND_ORE, None, True)
+			self.add_task(ct,BuilderTask.FIND_ORE, None, True)
 		super().task_complete(ct)
 	
 	def end_task(self):

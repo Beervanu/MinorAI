@@ -72,12 +72,12 @@ def reached_ore(self:BuilderBot, ct:Controller, reached_target:bool):
 			for pos in all_dir:
 				if self.is_valid_position(pos) and self.check_bit(self.walkable_board, pos) and not self.check_bit(self.enemy_buildings_board|self.axionite_ores_board|self.titanium_ores_board, pos):
 					print(f'{pos.x} {pos.y} is walkable - build a bridge here')
-					self.add_task(BuilderTask.BUILD_BRIDGE, pos)
+					self.add_task(ct,BuilderTask.BUILD_BRIDGE, pos)
 					break
 			self.task_complete(ct)
 			return True
 	
-def is_valid(self:BuilderBot, task:TaskData)->bool:
+def is_valid(self:BuilderBot,ct:Controller, task:TaskData)->bool:
 	return bool(self.check_bit(~self.team_harvesters_board&self.connected_region, task['data']))
 
 
