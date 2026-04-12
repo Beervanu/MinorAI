@@ -16,6 +16,7 @@ def set_target(self: BuilderBot, ct:Controller, reached_target: bool):
 	if enemy_core_pos:
 		self.enemy_core_pos = enemy_core_pos
 		# If it witnin visible range, set it as the target and switch to attack task
+		#TODO need to change the map symmetry here based on the position
 		self.change_target(self.enemy_core_pos, 9)
 		self.add_task(BuilderTask.ATTACK_ENEMY_CORE, self.core_pos)
 		self.task_complete(ct)
@@ -28,11 +29,7 @@ def set_target(self: BuilderBot, ct:Controller, reached_target: bool):
 			self.add_task(BuilderTask.ATTACK_ENEMY_CORE, self.core_pos)
 			self.task_complete(ct)
 			return False
-						
-
-		# The first position is the one symmetric to our core across x and y, the second is symmetric across the y axis and the third is symmetric across the x axis. We sort these positions by distance from our current position to prioritise the closest one first.
-		# Recomputed each time 😔 literally takes microseconds but I should probably move this but I am lazy.
-		
+				
 		self.change_target(self.symmetry_positions[self.task['data']], GameConstants.BUILDER_BOT_VISION_RADIUS_SQ)
 		self.phase+=1
 		return True

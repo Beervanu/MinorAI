@@ -4,7 +4,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
 	from ..BuilderBot import BuilderBot
 from ..Constants import DIRECTIONS, CONVEYOR_ENTITIES
-from ..Tasktypes import BuilderTask
+from ..Tasktypes import BuilderTask, TaskData
 from cambc import Controller, Position, EntityType, Direction
 
 task_type = BuilderTask.BUILD_BRIDGE # some BuilderTask
@@ -196,5 +196,10 @@ def build_conveyors(self:BuilderBot, ct:Controller, reached_target:bool):
 				self.change_target(self.bridge_path[self.bridge_path_index],2)
 				self.phase-=1
 				return False
+			
+def is_valid(self:BuilderBot, task:TaskData)->bool:
+	print(task['data'])
+	return bool(self.check_bit(self.connected_region, task['data']))
+
 phases = [generate_path, choose_bridge_type, build_conveyors]
 do_once = True

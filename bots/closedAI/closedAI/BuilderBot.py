@@ -5,6 +5,7 @@ import heapq
 from math import floor, ceil
 from .Bot import *
 from .Tasks import builder_tasks, DO_ONCE_TASKS
+from .helper_functions import *
 
 class BuilderBot(Bot):
 	def __init__(self, ct:Controller, core_pos: Position, move_dir: Direction):
@@ -35,17 +36,17 @@ class BuilderBot(Bot):
 		self.phase = 0
 		self.do_pathfinding = True
 		self.pathfinding_interrupted = False
-		self.pathfinding_save_state:dict[str, Any] = {'time_out':3}
-
+		self.pathfinding_save_state:dict[str, Any] = {'time_out':1}
+		self.do_bug_pathfinding=False
 		# The ordered list of positions and the corresponding bitboard
 		self.bridge_path = []
 		self.bridge_path_index = 0
 		self.bridge_path_board = None
 		self.path = [] # List[Position] - ordered steps from current position to target
 		self.path_index = 0 # How far along the path we are
-		self.path_board = None # Bitboard representation of the path for parallel collision detection
 		self.conveyor_path:list[Position] = []
-		
+		self.going_clockwise = True
+		self.closest_distance_to_target_reached= float('inf')
 		if ct.get_current_round() >= 50:
 			self.add_task(BuilderTask.FIND_ENEMY_CORE, 0)
 		self.add_task(BuilderTask.FIND_ORE, None, True)
@@ -131,7 +132,7 @@ class BuilderBot(Bot):
 		# shift to recenter bitmask on index - order is important, else we might delete part of the mask
 		neighbour_bit_mask >>= self.map_width + 1
 		
-		neighbours = (self.walkable_board|(~self.seen_board)) & neighbour_bit_mask
+		neighbours = (self.walkable_board|(~self.seen_board)) & neighbour_bit_mask&self.connected_region
 		while neighbours:
 			(neighbours, nb) = self.pop_lsb(neighbours)
 			yield nb
@@ -171,6 +172,7 @@ class BuilderBot(Bot):
 		neighbour_bit_mask >>= self.map_width*3 + 3
 			
 		neighbours = (self.walkable_board|(~self.seen_board)) & neighbour_bit_mask & (~self.enemy_buildings_board) & ~(self.axionite_ores_board | self.titanium_ores_board)
+		neighbours &= self.connected_region
 		while neighbours:
 			(neighbours, nb) = self.pop_lsb(neighbours)
 			yield nb
@@ -213,12 +215,7 @@ class BuilderBot(Bot):
 			goals = self.pathfinding_save_state['goals']
 			goal = self.pathfinding_save_state['goal']
 			start = self.pathfinding_save_state['start']
-			self.pathfinding_save_state['time_out']-=1
-			if self.pathfinding_save_state['time_out'] == 0:
-				# if we really can't find a path just end
-				print("Failed completely to find a path")
-				self.task_complete(ct)
-				return None
+			
 
 		out_of_time = False
 		while weight>=1 and open_set and (not out_of_time):
@@ -227,7 +224,7 @@ class BuilderBot(Bot):
 			else:
 				from_save_state = False
 				closed_set = self.pathfinding_save_state['closed_set']
-			while (open_set and ct.get_cpu_time_elapsed()-starttime<timelimit):
+			while open_set:
 				# we failed to find a path on this run through: save our state in case we need to keep calculating next turn
 				if ct.get_cpu_time_elapsed()-starttime>timelimit or ct.get_cpu_time_elapsed()>1900:
 					out_of_time = True
@@ -340,8 +337,9 @@ class BuilderBot(Bot):
 		"""
 		#check if there are actually any points we can pathfind to
 		is_free_space = False
+		valid_pathfinding_spots = (self.walkable_board|(~self.seen_board)) & self.connected_region
 		for pos in self.positions_in_radius(goal, self.target_radius_sq):
-			if self.check_bit(self.walkable_board|(~self.seen_board), pos):
+			if self.check_bit(valid_pathfinding_spots, pos):
 				is_free_space = True
 				break
 				
@@ -350,19 +348,20 @@ class BuilderBot(Bot):
 			print('start collided')
 			self.reset_path()
 			return False
-
-		result = self.ara(ct, start, goal, 1200, False)
-		if result is None:
-			self.reset_path()
-			return False
+		self.closest_distance_to_target_reached=float('inf')
+		if self.do_bug_pathfinding:
+			print("Doing bug pathfinding")
+			t = ct.get_cpu_time_elapsed()
+			result = self.bug_path_find(ct,start,goal, self.target_radius_sq)
+			print(f'Took {ct.get_cpu_time_elapsed()-t}')
+		else:
+			result = self.ara(ct, start, goal, 1300, False)
+			if result is None:
+				self.reset_path()
+				return False
 		
 		self.path = result
 		self.path_index = 0
-
-		# Build the path bitboard for collision detection later 
-		self.path_board = 0
-		for pos in self.path:
-			self.path_board = self.set_bit(self.path_board, pos)
 
 		return True
 	
@@ -392,11 +391,13 @@ class BuilderBot(Bot):
 
 		return True
 
-	def check_path_collisions(self, path, index, bridge=False) -> bool:
-		"""
-		Returns True if any obstacle now overlaps the remaining path.
-		"""
 
+
+	def check_path_collisions(self, path, index, bridge=False) -> int:
+		"""
+		Returns the bitboard of collisions if any obstacle now overlaps the remaining path.
+		"""
+		#TODO this is slow, we should create the path bitboard at creation of the path, then remove bits from the remaining board as we go through the path.
 		remaining_board = 0
 		# The : after self.path_index is string slicing to get the remaining path from the current position to the target
 		for pos in path[index:]:
@@ -412,7 +413,7 @@ class BuilderBot(Bot):
 			mask |= self.titanium_ores_board | self.axionite_ores_board
 			# can't yet build on enemy buildings
 			mask |= self.enemy_buildings_board
-		return (remaining_board & mask) != 0
+		return (remaining_board & mask)
 
 	def follow_path(self, ct: Controller) -> bool:
 		""" Takes one step along the cached path. Returns True if a step was taken."""
@@ -434,6 +435,9 @@ class BuilderBot(Bot):
 		if ct.can_move(direction):
 			ct.move(direction)
 			self.path_index += 1
+			dist_to_target = next_pos.distance_squared(self.target)
+			if self.closest_distance_to_target_reached>dist_to_target:
+				self.closest_distance_to_target_reached = dist_to_target
 			return True
 		
 		return False
@@ -458,7 +462,6 @@ class BuilderBot(Bot):
 		if self.map_symmetry:
 			self.enemy_core_pos = self.apply_symmetry(self.core_pos)
 	
-
 	def turn_start(self, ct: Controller):
 		super().turn_start(ct)
 		self.count=0
@@ -476,8 +479,18 @@ class BuilderBot(Bot):
 		if self.pathfinding_interrupted:
 			self.pathfinding_interrupted = False
 			
-			#doesn't matter what arguments we put in for goal and start, as we are recovering the state from the saved one anyway
-			self.ara(ct, Position(0,0), Position(0,0), 1000, from_save_state=True)
+			
+			self.pathfinding_save_state['time_out']-=1
+			if self.pathfinding_save_state['time_out'] == 0:
+				print("A star failed to find a path in time, do bug pathfinding")
+				self.do_bug_pathfinding=True
+			else:
+				#doesn't matter what arguments we put in for goal and start, as we are recovering the state from the saved one anyway
+				result = self.ara(ct, Position(0,0), Position(0,0), 1000, from_save_state=True)
+				if result:
+					self.path = result
+					self.path_index = 0
+			
 		task_time = ct.get_cpu_time_elapsed()
 		keep_processing_tasks = True
 		while (keep_processing_tasks and not self.pathfinding_interrupted):
@@ -495,9 +508,22 @@ class BuilderBot(Bot):
 			elif not self.path:
 				self.compute_path(ct, current_pos, self.target)
 			# Check if cached path from the previous turn has been blocked
-			elif self.check_path_collisions(self.path, self.path_index):
+			elif (collisions:=self.check_path_collisions(self.path, self.path_index)):
 				# Path is blocked, need to recompute
-				self.compute_path(ct, current_pos, self.target)
+				if self.do_bug_pathfinding:
+					#ignore the collision unless it is directly in front of us to save on computation
+					next_pos = self.path[self.path_index]
+					if self.check_bit(collisions, next_pos):
+						#if we collide with a unit just recompute
+						if self.check_bit(self.units_board, next_pos):
+							self.compute_path(ct, current_pos, self.target)
+							break
+						pos_before_collision = ([current_pos]+self.path)[self.path_index]
+						dir_facing = pos_before_collision.direction_to(next_pos)
+						new_path = self.bug_path_find(ct, pos_before_collision, self.target, self.target_radius_sq, dir_facing, self.closest_distance_to_target_reached)
+						self.path =self.path[:self.path_index]+new_path
+				else:
+					self.compute_path(ct, current_pos, self.target)
 
 			# If path is valid follow it
 			if self.path:
@@ -525,13 +551,14 @@ class BuilderBot(Bot):
 		"""Processes the current task, returning True if we should continue processing"""
 		# if there are some tasks in the back log and our current task is interruptable
 		original_task = None
+		self.cull_task_backlog(ct)
 		if self.task and self.task['interruptable'] and self.task_backlog:
 			self.task_backlog.append(self.task)
 			original_task = self.task
 			self.task = None
 		if not self.task:
+			self.sort_task_backlog(ct)
 			if self.task_backlog:
-				self.sort_task_backlog(ct)
 				self.task = self.task_backlog.pop(0)
 				if not original_task == self.task:
 					if original_task:
@@ -562,12 +589,14 @@ class BuilderBot(Bot):
 		self.phase = 0
 		self.do_pathfinding = True
 		self.pathfinding_interrupted = False
-		self.pathfinding_save_state = {'time_out':3}
+		self.pathfinding_save_state = {'time_out':1}
+		
 
 	def reset_path(self):
 		self.path = []
 		self.path_index = 0
-		self.path_board = 0
+		self.do_bug_pathfinding=False
+		self.closest_distance_to_target_reached = float('inf')
 	
 	def reset_bridge_path(self):
 		self.bridge_path = []
@@ -584,3 +613,106 @@ class BuilderBot(Bot):
 		self.reset_path()
 		self.target = target
 		self.target_radius_sq = radius_sq
+	
+	#if we are fixing a path, specify the direction we were facing before the collision and closest distance squared we have been to the goal, in order to prevent backtracking
+	def bug_path_find(self,ct:Controller, start:Position, goal:Position, goal_radius_sq:int, facing:(Direction|None)=None, closest_distance_sq:float=0):
+		path = [start]
+		if not facing:
+			path += self.straight_path_to_target(ct, start, goal)
+		#follow the obstacle around in clockwise manner until we are closer than before
+		obstacle_board = (~self.walkable_board)&self.seen_board
+		change_direction = False
+		change_direction_consecutive_counter = 0
+		while path[-1].distance_squared(goal) > goal_radius_sq:
+			if change_direction:
+				change_direction_consecutive_counter+=1
+			else:
+				change_direction_consecutive_counter=0
+			if change_direction_consecutive_counter==2:
+				# something definitely went wrong
+				return[]
+			change_direction = False
+			current_pos = path[-1]
+			if facing:
+				check_dir = facing
+				facing = None				
+			else:
+				check_dir = path[-1].direction_to(goal)
+				closest_distance_sq = current_pos.distance_squared(goal)
+			path_around_obstacle = []
+			visited = set()
+			visited_twice = set()
+			while current_pos.distance_squared(goal)>= closest_distance_sq:
+				if current_pos in visited:
+					if current_pos in visited_twice:
+						#some weird shenanigans has happened, we have collided with a unit somewhere so now we are going in circles,
+						# I think if I return an empty path, the bot might eventually recover
+						return[]
+					visited_twice.add(current_pos)
+				visited.add(current_pos)
+				check_pos = current_pos.add(check_dir)
+				#if we run off the edge of the map, change the way we are going around the obstacle
+				if not self.is_valid_position(check_pos):
+					change_direction = True
+				while (not change_direction) and self.check_bit(obstacle_board,check_pos):
+					check_dir = check_dir.rotate_left() if self.going_clockwise else check_dir.rotate_right()
+					check_pos = current_pos.add(check_dir)
+					#if we run off the edge of the map, change the way we are going around the obstacle
+					if not self.is_valid_position(check_pos):
+						change_direction = True
+
+				if change_direction:
+					self.going_clockwise= not self.going_clockwise
+					path_around_obstacle = []
+					current_pos = path[-1]
+					break
+
+				current_pos = check_pos
+				path_around_obstacle.append(current_pos)			
+				check_dir = check_dir.rotate_right() if self.going_clockwise else check_dir.rotate_left()
+				if check_dir in CARDINAL_DIRECTIONS:
+					check_dir = check_dir.rotate_right() if self.going_clockwise else check_dir.rotate_left()
+			path+=path_around_obstacle
+			path += self.straight_path_to_target(ct, current_pos, goal)
+		return path[1:]
+
+
+
+	#returns (path, destination)
+	#where path: Direction[] and destination: Position
+	#returns the path to the furthest we can get in the direction of end goal in the naive approach
+	def straight_path_to_target(self,ct:Controller, start:Position, end:Position):
+		path_dir = Position(end.x-start.x, end.y-start.y)
+		steps = max(abs(path_dir.x), abs(path_dir.y))
+		num_diag = min(abs(path_dir.x), abs(path_dir.y))
+		num_non_diag = steps - num_diag
+		
+		y_dir = Direction.SOUTH if path_dir.y>=0 else Direction.NORTH
+		x_dir = Direction.EAST if path_dir.x>=0 else Direction.WEST
+		non_diag_direction =x_dir if abs(path_dir.x) > abs(path_dir.y) else y_dir
+		diag_direction = closest_diagonal(x_dir, y_dir)
+		current_pos = start
+		path = []
+		for i in range(steps):
+			# try and go diagonal first
+			if num_diag:
+				check_pos = current_pos.add(diag_direction)
+				if self.check_bit(self.walkable_board|(~self.seen_board),check_pos):
+					num_diag-=1
+					path.append(check_pos)
+					current_pos = check_pos
+					continue
+			
+			#go in the non-diagonal direction
+			if not num_non_diag:
+				return path
+			check_pos = current_pos.add(non_diag_direction)
+			if self.check_bit(self.walkable_board|(~self.seen_board),check_pos):
+				path.append(check_pos)
+				current_pos = check_pos
+				num_non_diag -= 1
+			else:
+				return path
+		return path
+
+

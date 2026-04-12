@@ -4,7 +4,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
 	from ..BuilderBot import BuilderBot
 
-from ..Tasktypes import BuilderTask
+from ..Tasktypes import BuilderTask, TaskData
 from cambc import Controller, Direction, EntityType, GameConstants
 from ..Constants import DIRECTIONS, CARDINAL_DIRECTIONS
 
@@ -90,6 +90,10 @@ def place_sentinel(self: BuilderBot, ct:Controller, reached_target: bool):
 		if ct.can_build_sentinel(self.target, build_dir):
 			ct.build_sentinel(self.target, build_dir)
 			self.task_complete(ct)
+
+def is_valid(self:BuilderBot, task:TaskData)->bool:
+	return bool(self.check_bit(self.connected_region, task['data']))
+
 phases = [set_target, attack, place_sentinel]
 do_once = True
 

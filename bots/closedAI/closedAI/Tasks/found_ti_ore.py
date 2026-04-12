@@ -5,21 +5,20 @@ if TYPE_CHECKING:
 	from ..BuilderBot import BuilderBot
 	
 from ..Constants import CARDINAL_DIRECTIONS, CONVEYOR_ENTITIES
-from ..Tasktypes import BuilderTask
+from ..Tasktypes import BuilderTask, TaskData
 from cambc import Controller, GameConstants, EntityType
 task_type = BuilderTask.FOUND_TI_ORE # some BuilderTask
 
 def set_target(self: BuilderBot, ct:Controller, reached_target: bool):
-	# if we have already built a harvester on this square don't pathfind there
-	if self.check_bit(self.team_harvesters_board, self.task['data']):
-		self.task_complete(ct)
-		return True
 	self.change_target(self.task['data'], 2)
 	self.phase +=1
 	return True
 
 def get_to_ore(self: BuilderBot, ct:Controller, reached_target: bool):
 	current_pos = ct.get_position()
+	if not self.check_bit(self.connected_region, self.target):
+		self.task_complete(ct)
+		return True
 	if self.check_bit(self.team_buildings_board, self.target) and current_pos.distance_squared(self.target) <= GameConstants.BUILDER_BOT_VISION_RADIUS_SQ:
 		b_id = ct.get_tile_building_id(self.target)
 		#if it is a (team) harvester some other bot will have built from it
@@ -78,6 +77,9 @@ def reached_ore(self:BuilderBot, ct:Controller, reached_target:bool):
 			self.task_complete(ct)
 			return True
 	
+def is_valid(self:BuilderBot, task:TaskData)->bool:
+	return bool(self.check_bit(~self.team_harvesters_board&self.connected_region, task['data']))
+
 
 phases = [set_target, get_to_ore, reached_ore]
 do_once = False

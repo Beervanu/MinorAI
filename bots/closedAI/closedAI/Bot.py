@@ -3,12 +3,10 @@ from .Markers import *
 from .Tasktypes import *
 from cambc import Position,EntityType,Environment
 from .Constants import *
-from .Tasks import DO_ONCE_TASKS
+from .Tasks import DO_ONCE_TASKS, builder_tasks
 from .MapSymmetry import *
 from math import log2, floor
-import sys
-def eprint(*args, **kwargs):
-    print(*args, file=sys.stderr, **kwargs)
+from .helper_functions import eprint
 
 
 class Bot:
@@ -50,7 +48,7 @@ class Bot:
 		# 1 mask
 		# 1
 		self.direct_neighbour_vertical_mask = self.generate_mask([0b1]*3)
-
+		
 		# 1 1 1 mask
 		self.direct_neighbour_horizontal_mask = 0b111
 
@@ -65,7 +63,10 @@ class Bot:
 		
 		self.bridge_neighbour_vertical_mask = self.generate_mask([0b1]*7)
 		self.bridge_neighbour_horizontal_mask = 0b1111111
-
+		self.max_int = (1<<self.map_width*self.map_height)-1
+		self.inverted_right_mask = self.max_int-self.generate_mask([0b1]*self.map_height)
+		self.inverted_left_mask = self.inverted_right_mask<<1
+		self.connected_region = self.max_int-1
 		self.map_symmetry = MapSymmetry.UNKNOWN
 
 		self.central_marker_data = CentralMarkerData()
@@ -79,8 +80,8 @@ class Bot:
 		
 	def board_string(self, board:int)->str:
 		"""Returns the string of all positions with a 1 in the board. Used for debugging"""
-		max_int = pow(2,self.map_width*self.map_height)-1
-		board = board&max_int
+		
+		board = board&self.max_int
 		pos_list = []
 		while (board):
 			(board, pos) = self.pop_lsb(board)
@@ -98,18 +99,6 @@ class Bot:
 		for i in range(len(arr)):
 			mask+=arr[i]<<(self.map_width*i)
 		return mask
-
-	def closest_point(self, point:Position, arr:list[Position])->Position:
-		best_pos = None 
-		best_dist = float('inf')
-		for pos in arr:
-			dist = point.distance_squared(pos)
-			if dist< best_dist:
-				best_dist = dist
-				best_pos = pos
-		if not best_pos:
-			raise Exception('no closest point')
-		return best_pos
 
 	def pop_lsb(self, bitboard:int)-> tuple[int, Position]:
 		"""Gets the 1-lsb from a bitboard and then returns the bitboard with that bit set to 0 and the extracted position."""
@@ -136,6 +125,11 @@ class Bot:
 		# This leaves a binary (See what I did there) possiblity for the final output: Either the values of the bit at the index or 0.
 		return (bitboard & (bitmask)) != 0
 	
+	def get_bitmask(self, pos:Position) -> int:
+		index = pos.y * self.map_width + pos.x
+		bitmask = 1 << index
+		return bitmask
+
 	def set_bit(self, bitboard: int, pos: Position) -> int:
 		"""Turns the bit ON at a given Position and returns the new board."""
 		# Still maps the input position to the correct index for the bitboard. Nothing has changed here.
@@ -183,6 +177,7 @@ class Bot:
 		"""Called after moving to map newly revealed terrain.""" 
 		# This acts as a way to fill in the dark areas of map memory.
 		print("Updating terrain vision")
+		old_walkable_board = self.walkable_board
 		self.units_board = 0
 		self.units_adjacent_board = 0
 		current_pos = ct.get_position()
@@ -200,11 +195,12 @@ class Bot:
 				self.units_adjacent_board |=mask
 
 		is_builder_bot = self.entity_type == EntityType.BUILDER_BOT
-
 		#first update environment
 		for pos in ct.get_nearby_tiles():
+			pos_bitmask = self.get_bitmask(pos)
+			inverted_pos_bitmask = self.max_int-pos_bitmask
 			# Skip if we have already mapped this tile as a wall (the environment can't change to anything else)
-			if self.check_bit(self.seen_board,pos):
+			if self.seen_board & pos_bitmask:
 				continue
 			
 
@@ -212,6 +208,7 @@ class Bot:
 			# The change is we now have a seen board which essentially did what I already did but it a more compact way.
 			env = ct.get_tile_env(pos)
 			if env == Environment.WALL:
+
 				self.walls_board, self.walls_symmetry_boards = self.set_symmetry_bit(self.walls_board, self.walls_symmetry_boards,pos)
 			elif env == Environment.ORE_TITANIUM:
 				self.titanium_ores_board, self.titanium_ores_symmetry_boards = self.set_symmetry_bit(self.titanium_ores_board, self.titanium_ores_symmetry_boards,pos)
@@ -229,57 +226,78 @@ class Bot:
 		print(f'Updating environment took {ct.get_cpu_time_elapsed()}μs')
 		#then update buildings
 		for pos in ct.get_nearby_tiles():
-
+			pos_bitmask = self.get_bitmask(pos)
+			inverted_pos_bitmask = self.max_int-pos_bitmask
 			# Skip if we have already mapped this tile as a wall (it cant change to anything else) or we already mapped this tile this round
-			if self.check_bit(self.walls_board,pos) or self.check_bit(self.seen_this_round_board, pos):
+			if self.walls_board&pos_bitmask or self.seen_this_round_board&pos_bitmask:
 				continue
 
 			self.seen_this_round_board = self.set_bit(self.seen_this_round_board, pos)
 			
 			#update buildings on a tile (need to do this for all non wall tiles every time)
 			#is it already passable or is it empty and there is no unit on it
-			if ct.is_tile_passable(pos) or (ct.is_tile_empty(pos) and not self.check_bit(self.units_board, pos)):
-				self.walkable_board = self.set_bit(self.walkable_board, pos)
+			if ct.is_tile_passable(pos) or (ct.is_tile_empty(pos) and not self.units_board&pos_bitmask):
+				if not self.walkable_board& pos_bitmask:
+					self.walkable_board |= pos_bitmask
 			else:
-				self.walkable_board = self.clear_bit(self.walkable_board, pos)
+				if self.walkable_board& pos_bitmask:
+					self.walkable_board &= inverted_pos_bitmask
 			#add our own position to the walkable board so pathfinding isnt confused
 			self.walkable_board = self.set_bit(self.walkable_board, ct.get_position())
 			# update boards
-			self.team_buildings_board = self.clear_bit(self.team_buildings_board, pos)
-			self.enemy_buildings_board= self.clear_bit(self.enemy_buildings_board, pos)
-			self.team_bridges_board = self.clear_bit(self.team_bridges_board,pos)
-			self.team_harvesters_board = self.clear_bit(self.team_bridges_board,pos)
-			self.enemy_conveyor_board= self.clear_bit(self.enemy_conveyor_board, pos)
+			self.team_buildings_board &= inverted_pos_bitmask
+			self.enemy_buildings_board&= inverted_pos_bitmask
+			self.team_bridges_board &= inverted_pos_bitmask
+			self.team_harvesters_board &= inverted_pos_bitmask
+			self.enemy_conveyor_board&= inverted_pos_bitmask
 			building_id = ct.get_tile_building_id(pos)
 			if building_id:
 				etype = ct.get_entity_type(building_id)
 				is_team: bool = ct.get_team() == ct.get_team(building_id)
 				if etype == EntityType.MARKER:
-					self.walkable_board = self.set_bit(self.walkable_board, pos)
+					self.walkable_board |= pos_bitmask
 					if is_team:
 						self.read_marker(ct, building_id)
 				else:
 					if is_team:
-						self.team_buildings_board= self.set_bit(self.team_buildings_board, pos)
+						self.team_buildings_board|= pos_bitmask
 						if etype == EntityType.BRIDGE:
-							self.team_bridges_board = self.set_bit(self.team_bridges_board,pos)
+							self.team_bridges_board |= pos_bitmask
 						elif etype == EntityType.HARVESTER:
-							self.team_harvesters_board = self.set_bit(self.team_harvesters_board, pos)
+							self.team_harvesters_board |= pos_bitmask
 					else:
 						self.enemy_buildings_board= self.set_bit(self.enemy_buildings_board, pos)
 						if etype in CONVEYOR_ENTITIES:
-							# if self.check_bit(self.ore_adjacent_board, pos) and is_builder_bot:
-							# 	self.add_task(BuilderTask.PLACE_SENTINEL, pos)
+							if self.ore_adjacent_board&pos_bitmask and is_builder_bot:
+								self.add_task(BuilderTask.PLACE_SENTINEL, pos)
 							if etype != EntityType.BRIDGE:
-								self.enemy_conveyor_board = self.set_bit(self.enemy_conveyor_board, pos)
+								self.enemy_conveyor_board |= pos_bitmask
 
 
 		print(f'Updating buildings took {ct.get_cpu_time_elapsed()}μs')
+		if old_walkable_board!=self.walkable_board:
+			self.connected_region = self.update_region(self.walkable_board|(self.max_int-self.seen_board),current_pos)
+			print(f'Updating connected region took {ct.get_cpu_time_elapsed()}μs')
+
 
 	def turn_start(self,ct):
 		self.seen_this_round_board = 0
 
+	def update_region(self, empty_bitboard:int, start_pos:Position):
+		region_bitboard = self.set_bit(0, start_pos)
+		old = 0
+		while old!=region_bitboard:
+			old = region_bitboard
+			region_bitboard |= (region_bitboard<<1)&self.inverted_left_mask
+			region_bitboard |= (region_bitboard>>1)&self.inverted_right_mask
+			region_bitboard |= (region_bitboard>>self.map_width)
+			region_bitboard |= (region_bitboard<<self.map_width)
+			region_bitboard&=empty_bitboard
+		return region_bitboard
+
+
 	def turn_end(self, ct:Controller):
+		
 		if ct.get_cpu_time_elapsed()>2000:
 			eprint('Lagging, Round:', ct.get_current_round(), 'Bot:', ct.get_entity_type())
 
@@ -292,9 +310,12 @@ class Bot:
 		return identifier
 
 	def add_task(self, task: Task, data: Any, interruptable=False)->bool:
-		"""Adds the given task, and decides whether to execute the task based on its priority. Returns True if we are switching to that task, False if not """
-		# don't add this task if it has already been completed
+		"""Adds the given task, while checking whether it is valid, or already done"""
+
 		identifier = self.get_task_identifier(task, data)
+		taskdata:TaskData = {"type":task, "data":data, "identifier": identifier, "interruptable": interruptable, "uid":self.task_num}
+		if not builder_tasks[task]['is_valid'](self, taskdata):
+			return False
 		if task in DO_ONCE_TASKS:
 			check_tasks = self.done_tasks+self.task_backlog
 			if self.task:
@@ -305,7 +326,7 @@ class Bot:
 					return False
 		
 		# else add it to backlog
-		self.task_backlog.append({"type":task, "data":data, "identifier": identifier, "interruptable": interruptable, "uid":self.task_num})
+		self.task_backlog.append(taskdata)
 		self.task_num+=1
 		return False
 	
@@ -324,10 +345,22 @@ class Bot:
 		if self.task_backlog:
 			self.task_backlog.sort(key=lambda x: (self.task_priority[x['type']], self.get_task_secondary_priority(ct,x), x['uid']))
 
+	def cull_task_backlog(self, ct:Controller):
+		new_backlog = []
+		for task in self.task_backlog:
+			if builder_tasks[task['type']]['is_valid'](self, task):
+				new_backlog.append(task)
+			elif task['type'] in DO_ONCE_TASKS:
+				self.done_tasks.append(task)
+		self.task_backlog = new_backlog
+		
+
+
 	def task_complete(self,ct:Controller):
 		if self.task['type'] in DO_ONCE_TASKS:
 			self.done_tasks.append(self.task)
 		if self.task_backlog:
+			self.cull_task_backlog(ct)
 			self.sort_task_backlog(ct)
 			self.task = self.task_backlog.pop(0)
 			print(f'New Task: {self.task['type']}, Data: {self.task['data']}, I: {int(self.task["interruptable"])}')

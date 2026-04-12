@@ -4,7 +4,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
 	from ..BuilderBot import BuilderBot
 
-from ..Tasktypes import BuilderTask
+from ..Tasktypes import BuilderTask, TaskData
 from cambc import Controller, ResourceType
 
 task_type = BuilderTask.ATTACK_ENEMY_CORE # some BuilderTask
@@ -30,6 +30,8 @@ def find_bridges(self: BuilderBot, ct:Controller, reached_target: bool):
 					self.task_complete(ct)
 					return True
 
+def is_valid(self:BuilderBot, task:TaskData):
+	return not self.enemy_core_pos is None
 
 phases = [set_target, find_bridges]
 do_once = False
