@@ -140,7 +140,7 @@ class Bot:
 		self.task_num = 0
 		self.count = 0
 
-		# Cache map dimensions gloabally for this unit
+		# Cache map dimensions globally for this unit
 		self.map_width = ct.get_map_width()
 		self.map_height = ct.get_map_height()
 		self.task: TaskData = None
@@ -544,8 +544,9 @@ class BuilderBot(Bot):
 			BuilderTask.FOUND_TI_ORE,
 			BuilderTask.FOUND_HARVESTER,
 			BuilderTask.FIX_GAPS,
-			BuilderTask.FIND_ORE,
-			BuilderTask.FIND_HARVESTERS]
+			BuilderTask.FIND_HARVESTERS,
+			BuilderTask.FIND_ORE
+			]
 		#generate lookup table for task priorities
 		self.task_priority = {}
 		for i in range(len(priority_list)):
@@ -567,8 +568,12 @@ class BuilderBot(Bot):
 		self.path_index = 0 # How far along the path we are
 		self.path_board = None # Bitboard representation of the path for parallel collision detection
 		self.conveyor_path:list[Position] = []
+
+		self.patrol_cooldown = 0
+		self.last_patrol_round = 0
+		self.returning_to_core = False
 		
-		if ct.get_current_round() >= 50:
+		if ct.get_current_round() >= 4:
 			self.add_task(BuilderTask.FIND_HARVESTERS, 0)
 		self.add_task(BuilderTask.FIND_ORE, None, True)
 
@@ -881,9 +886,16 @@ class BuilderBot(Bot):
 			(found_harvesters, pos) = self.pop_lsb(found_harvesters)
 			yield pos
 
-	def find_gaps(self, ct: Controller) -> heapq:
+	def find_gaps(self, ct: Controller) -> list:
 		"""Finds gaps in the our bridge/conveyor network between the given harvester and the core using flood fill. The closest gap to the harvester is returned first."""
 		infrastructure_board = self.team_bridges_board | self.team_conveyors_board
+
+
+		 # Clean up destroyed bridges before flood fill
+		self.bridge_connections = {
+			(base, target) for base, target in self.bridge_connections
+			if self.check_bit(self.team_bridges_board, base)
+		}
 
 		# Start the flood fill from the core position
 		reached = 0
@@ -919,8 +931,7 @@ class BuilderBot(Bot):
 				# No more expansion possible, we have reached all tiles connected to the core
 				break
 
-		# Disconnected conveyors = conveyors the fill didn't reach. Bridges themselves are not
-		# "gaps to fix" since they span non-adjacent tiles and only their base is in the board.
+		# Disconnected infrastructure the flood fill did not reach.
 		disconnected = self.team_conveyors_board & ~reached & self.seen_board
 
 		# Extract the positions of the gaps and then sort them by distance.
@@ -928,6 +939,16 @@ class BuilderBot(Bot):
 		while disconnected:
 			(disconnected, pos) = self.pop_lsb(disconnected)
 			heapq.heappush(gaps, (self.chebyshev(pos, ct.get_position()), pos))
+
+		# Check for broken bridges — one end reached, the other not
+		# In most cases a redudant check since the broken bridges get cleaned at the beginning. But it catches the edge case in which a bridge is brolen but there are no conveyors beyond it.
+		for base_pos, target_pos in self.bridge_connections:
+			base_reached = self.check_bit(reached, base_pos)
+			target_reached = self.check_bit(reached, target_pos)
+			if base_reached != target_reached:
+				gap_pos = target_pos if not target_reached else base_pos
+				heapq.heappush(gaps, (self.chebyshev(gap_pos, ct.get_position()), gap_pos))
+
 
 		return gaps
 
@@ -1361,34 +1382,79 @@ class BuilderBot(Bot):
 				# Need to add logic to start destroying the core with turrets and stuff.
 				
 			case BuilderTask.FIND_HARVESTERS:
-				# Check every turn if an unvisited harvester is now visible
+				# Check if we should idle — patrol every 15 rounds
+				if self.patrol_cooldown > 0:
+					self.patrol_cooldown -= 1
+					return False
+
+				# Reset visited harvesters periodically
+				round_num = ct.get_current_round()
+				if round_num % 30 == 0:  # tune this
+					self.visited_harvesters.clear()
+					self.last_patrol_round = round_num
+
+				# Check for unvisited harvesters in vision
 				all_harvesters = list(self.get_friendly_harvesters(ct))
 				unvisited = [h for h in all_harvesters if h not in self.visited_harvesters]
-				if len(self.visited_harvesters) >= 3:
-					self.visited_harvesters.clear()
-					unvisited = all_harvesters
+
 				if unvisited:
 					self.friendly_harvesters = sorted(unvisited, key=lambda p: self.chebyshev(p, current_pos))
 					self.add_task(BuilderTask.FOUND_HARVESTER, None)
 					self.task_complete(ct)
 					return True
-				# No unvisited harvester visible - roam like FIND_ORE
-				next_pos = current_pos.add(self.move_dir)
-				if 0 <= next_pos.x < self.map_width and 0 <= next_pos.y < self.map_height and self.check_bit(self.walkable_board, next_pos):
-					if ct.can_move(self.move_dir):
-						ct.move(self.move_dir)
+
+				# No harvesters visible — are we too far from core?
+				# I added this in as wandering too far from the core results in the bot being more likely to be destroyed by enemy turrets
+				if current_pos.distance_squared(self.core_pos) > 200:
+					# Head back to core and idle
+					self.change_target(self.core_pos, 8)
+					self.returning_to_core = True
+					return True
+
+				# If we're back near the core and returning, start idling
+				if self.returning_to_core and current_pos.distance_squared(self.core_pos) <= 8:
+					self.returning_to_core = False
+					self.patrol_cooldown = 15  # idle for 15 rounds
+					return False
+
+				# Otherwise follow infrastructure outward
+				best_tile = None
+				best_dist = current_pos.distance_squared(self.core_pos)
+
+				for tile in ct.get_nearby_tiles():
+					if tile.distance_squared(self.core_pos) <= best_dist:
+						continue
+					if tile == self.last_tile:
+						continue
+					building_id = ct.get_tile_building_id(tile)
+					if building_id and ct.get_team(building_id) == ct.get_team():
+						direction = current_pos.direction_to(tile)
+						if ct.can_move(direction):
+							best_tile = tile
+							best_dist = tile.distance_squared(self.core_pos)
+
+				if best_tile:
+					self.last_tile = current_pos
+					ct.move(current_pos.direction_to(best_tile))
 				else:
-					self.move_dir = self.move_dir.rotate_right()
-			
+					# Dead end — head back to core
+					self.change_target(self.core_pos, 8)
+					self.returning_to_core = True
+
 			case BuilderTask.FOUND_HARVESTER:
+				if not self.friendly_harvesters:
+					self.task_complete(ct)
+					return True
+				
 				if self.target is None:
 					self.change_target(self.friendly_harvesters[0], 2)
 					return True
+				
 				if reached_target:
 					self.visited_harvesters.add(self.friendly_harvesters[0])
 					self.friendly_harvesters.pop(0)
-					self.task_complete(ct)
 					self.add_task(BuilderTask.FIX_GAPS, None)
+					self.task_complete(ct)
 					return True
 				
 				# Still trying to reach the harvest so continue processing this task but also check if we can find any more friendly harvesters as we go.
@@ -1508,8 +1574,8 @@ class Core(Bot):
 				ct.spawn_builder(spawn_pos)
 				self.num_spawned += 1
 		round = ct.get_current_round()
-		if  round >= 50 and not round %500:
-			# Spawn a bot with the find bot task to start scouting for ore and the enemy core
+		if  round >= 50 and not round %500: 
+			# Spawn a bot with the bot task to start scouting for ore and the enemy core
 			spawn_pos = ct.get_position().add(self.spawn_d) 
 			if ct.can_spawn(spawn_pos):
 				ct.spawn_builder(spawn_pos)
