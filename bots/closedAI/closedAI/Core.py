@@ -1,10 +1,12 @@
 from .Bot import Bot
 from cambc import Controller, Direction, EntityType, Position
+from .Constants import CONVEYOR_ENTITIES
 class Core(Bot):
 	def __init__(self, ct: Controller):
 		super().__init__(ct, EntityType.CORE)
 		self.num_spawned = 0
 		self.spawn_d = Direction.NORTH
+		self.spawned_defense = 0
 
 	def turn_start(self, ct: Controller):
 		super().turn_start(ct)
@@ -22,16 +24,23 @@ class Core(Bot):
 				self.num_spawned += 1
 		
 		if  round>= 50 and self.num_spawned<6:
-			# Spawn a bot with the find bot task to start scouting for ore and the enemy core
 			spawn_pos = ct.get_position().add(self.spawn_d) 
 			if ct.can_spawn(spawn_pos):
 				ct.spawn_builder(spawn_pos)
 				self.num_spawned += 1
-		
 		for ent in ct.get_nearby_entities():
-			if ct.get_entity_type(ent) == EntityType.MARKER and ct.get_team() == ct.get_team(ent):
+			etype = ct.get_entity_type(ent)
+			if  etype == EntityType.MARKER and ct.get_team() == ct.get_team(ent):
 				# Compare my internal marker data with the existing marker
-				self.read_marker(ct, ent) 
+				self.read_marker(ct, ent)
+			if self.spawned_defense <2:
+				if ct.get_team() == ct.get_team(ent):
+					if ct.get_hp(ent)!= ct.get_max_hp(ent):
+						#emergency defense
+						if ct.can_spawn(ct.get_position().add(self.spawn_d)):
+							ct.spawn_builder(ct.get_position().add(self.spawn_d))
+							self.spawned_defense +=1
+
 
 		for x in range(-2, 3):
 			for y in range(-2, 3):

@@ -29,6 +29,7 @@ class Player:
 			elif etype == EntityType.SENTINEL:
 				self.bot = SentinelBot(ct)
 			elif etype==EntityType.GUNNER:
+				print("hello")
 				self.bot = GunnerBot(ct)
 			
 			self.first_turn = False

@@ -9,9 +9,10 @@ class GunnerBot(Turret):
 		if attack_pos is None:
 			return
 		b_id = ct.get_tile_building_id(attack_pos)
-		if b_id and ct.get_team() != self.team:
+		if b_id and ct.get_team(b_id) != self.team:
 			self.attack(ct, attack_pos)
+			print('Tried to attack, ', attack_pos)
 		bb_id = ct.get_tile_builder_bot_id(attack_pos)
-		if bb_id and ct.get_team()!=self.team:
+		if bb_id and ct.get_team(bb_id)!=self.team:
 			self.attack(ct, attack_pos)
 

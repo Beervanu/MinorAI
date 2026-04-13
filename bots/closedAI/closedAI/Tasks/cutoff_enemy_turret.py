@@ -6,7 +6,7 @@ if TYPE_CHECKING:
 from ..Tasktypes import BuilderTask, TaskData
 from ..Constants import CARDINAL_DIRECTIONS, DIRECTIONS
 from cambc import Controller, EntityType
-
+from ..helper_functions import eprint
 task_type = BuilderTask.CUTOFF_ENEMY_TURRET # some BuilderTask
 
 def set_target(self: BuilderBot, ct:Controller, reached_target: bool):
@@ -29,12 +29,12 @@ def set_target(self: BuilderBot, ct:Controller, reached_target: bool):
 							continue
 
 						check_pos2 = check_pos.add(d2)
-						if self.is_valid_position(check_pos2):
+						if self.is_valid_position(check_pos2) and ct.is_in_vision(check_pos2):
 							b_id = ct.get_tile_building_id(check_pos2)
 							if b_id and ct.get_entity_type(b_id)==EntityType.GUNNER and ct.get_team(b_id)==ct.get_team():
 								self.task_complete(ct)
 								return True
-							self.change_target(check_pos, 2)
+							self.change_target(check_pos2, 2)
 							self.phase=2
 							return True
 	#successfully cutoff
@@ -62,11 +62,9 @@ def destroy_turret(self:BuilderBot, ct:Controller, reached_target:bool):
 		if ct.can_fire(self.target):
 			ct.fire(self.target)
 		b_id = ct.get_tile_building_id(self.target)
-		if b_id:
-			self.change_target(self.target)
-		else:
+		if not b_id or ct.get_entity_type(b_id) == EntityType.MARKER:
 			# try and move on top of the spot
-			self.change_target(self.target, 1)
+			self.change_target(self.target, 0)
 			if ct.get_action_cooldown()==0 and ct.get_move_cooldown()==0 and ct.get_global_resources()>ct.get_gunner_cost():
 				#move out of the way and place a gunner
 				for d in DIRECTIONS:
@@ -92,6 +90,8 @@ def is_valid(self: BuilderBot, ct:Controller, task:TaskData)->bool:
 					if etype in[EntityType.CONVEYOR, EntityType.ARMOURED_CONVEYOR]:
 						if ct.get_direction(b_id)==d.opposite():
 							conveyor_spotted=True
+					elif etype == EntityType.HARVESTER:
+						conveyor_spotted=True
 					elif etype == EntityType.GUNNER:
 						return False	
 		return conveyor_spotted

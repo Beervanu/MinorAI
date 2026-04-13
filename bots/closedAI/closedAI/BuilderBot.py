@@ -486,12 +486,12 @@ class BuilderBot(Bot):
 		task_time = ct.get_cpu_time_elapsed()
 		keep_processing_tasks = True
 		while (keep_processing_tasks and not self.pathfinding_interrupted):
-			
-			if self.task and self.task['type'] != BuilderTask.CUTOFF_ENEMY_TURRET and ct.get_global_resources()<ct.get_gunner_cost():
-				return
-
 			current_pos = ct.get_position()
-			keep_processing_tasks = self.process_tasks(ct)
+			if not self.task or self.task['type'] == BuilderTask.CUTOFF_ENEMY_TURRET or ct.get_global_resources()[0]>ct.get_gunner_cost()[0]*1.5:
+				keep_processing_tasks = self.process_tasks(ct)
+			else:
+				print("Task processing paused")
+				keep_processing_tasks = False
 			# if we don't want to pathfind
 			if self.target is None or not self.do_pathfinding:
 				print('No target/pathfinding off')
