@@ -61,10 +61,9 @@ def destroy_turret(self:BuilderBot, ct:Controller, reached_target:bool):
 			ct.destroy(self.target)
 		if ct.can_fire(self.target):
 			ct.fire(self.target)
+		# try and move on top of the spot
 		b_id = ct.get_tile_building_id(self.target)
 		if not b_id:
-			# try and move on top of the spot
-			self.change_target(self.target, 0)
 			if ct.get_action_cooldown()==0 and ct.get_move_cooldown()==0 and ct.get_global_resources()>ct.get_gunner_cost():
 				#move out of the way and place a gunner
 				for d in DIRECTIONS:
@@ -76,6 +75,9 @@ def destroy_turret(self:BuilderBot, ct:Controller, reached_target:bool):
 					ct.build_gunner(self.target, build_dir)
 					self.task_complete(ct)
 					return True
+		if ct.can_move(dir:=ct.get_position().direction_to(self.target)):
+			ct.move(dir)
+			self.change_target(self.target, 0)
 
 #is called before we switch to this task, and can be used to cull the task if it ever becomes invalid
 def is_valid(self: BuilderBot, ct:Controller, task:TaskData)->bool:
@@ -100,4 +102,5 @@ def is_valid(self: BuilderBot, ct:Controller, task:TaskData)->bool:
 	return False
 
 phases = [set_target, remove_feeding_conveyor, destroy_turret]
+#TODO change this
 do_once = True

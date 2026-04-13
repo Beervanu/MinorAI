@@ -78,6 +78,7 @@ def reached_ore(self:BuilderBot, ct:Controller, reached_target:bool):
 			return True
 	
 def is_valid(self:BuilderBot,ct:Controller, task:TaskData)->bool:
+	#TODO change to checking if a team conveyor is leading from this harvester
 	return bool(self.check_bit(~self.team_harvesters_board&self.connected_region, task['data']))
 
 
