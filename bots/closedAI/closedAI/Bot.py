@@ -7,6 +7,7 @@ from .Tasks import DO_ONCE_TASKS, builder_tasks
 from .MapSymmetry import *
 from math import log2, floor
 from .helper_functions import eprint
+from collections import defaultdict
 
 
 class Bot:
@@ -40,6 +41,13 @@ class Bot:
 		self.seen_this_round_board = 0
 		self.team_harvesters_board = 0
 		self.enemy_conveyor_board = 0
+		
+		self.conveyor_id = 0
+		self.conveyor_ids:defaultdict[Position, set[int]] = defaultdict(set)
+		self.conveyor_pointing_to:defaultdict[Position, Position|None] = defaultdict(lambda: None)
+		self.conveyors_pointing_into:defaultdict[Position, set[Position]] = defaultdict(set)
+		# each conveyor line has a unique id and has a bitboard, and a list of positions (in order)
+		self.conveyor_lines:dict[int, tuple[int,list[Position]]] = {}
 		# 1 1 1
 		# 1 0 1 mask
 		# 1 1 1 
@@ -173,6 +181,114 @@ class Bot:
 		"""Returns true if in map bounds"""
 		return 0<=pos.x<self.map_width and 0<=pos.y<self.map_height
 
+	
+	def add_conveyor(self, pos:Position, points_to:Position|None):
+		"""Adds a conveyor/bridge to our data structure, at position pos, pointing to points_to
+		points_to must be a valid position, or None if it points off the map"""
+		bitmask = self.get_bitmask(pos)
+		if self.conveyors_pointing_into[pos]:
+			for p in self.conveyors_pointing_into[pos]:
+				ids = self.conveyor_ids[p]
+				self.conveyor_ids[pos].update(ids)
+				for id in ids:
+					(bitboard, pos_list) = self.conveyor_lines[id]
+					bitboard |= bitmask
+					pos_list.append(pos)
+					self.conveyor_lines[id] = (bitboard, pos_list)
+		else:
+			self.conveyor_ids[pos].add(self.conveyor_id)
+			self.conveyor_lines[self.conveyor_id] = (bitmask, [pos])
+			self.conveyor_id +=1
+		
+		if points_to:
+			self.conveyors_pointing_into[points_to].add(pos)
+			#if it points to another conveyor
+			if self.conveyor_ids[points_to]:
+				remove_ids = set()
+				add_ids = self.conveyor_ids[pos]
+				bitb=0
+				line = []
+				found_bitboard = 0
+				for id in self.conveyor_ids[points_to]:
+					(bitb, line) = self.conveyor_lines[id]
+					# if we are adding to the end of the line
+					if line[0] == points_to:
+						(found_bitboard, found_list) = (bitb, line)
+						remove_ids = self.conveyor_ids[points_to].copy()
+					break
+				
+				#if we are adding to the middle of a line
+				if not found_bitboard:
+					remove_bitboard =self.max_int
+					for i in range(len(line)):
+						if line[i] == points_to:
+							found_list = line[i:]
+							found_bitboard = bitb&remove_bitboard
+							break
+						remove_bitboard = self.clear_bit(remove_bitboard, line[i])
+				#update the conveyor lines
+				for id in self.conveyor_ids[pos]:
+					(bitboard, line) = self.conveyor_lines[id]
+					self.conveyor_lines[id] = (bitboard|found_bitboard, line+found_list)
+				for id in remove_ids:
+					del self.conveyor_lines[id]
+				for p in found_list:
+					self.conveyor_ids[p].difference_update(remove_ids)
+					self.conveyor_ids[p].update(add_ids)
+		self.conveyor_pointing_to[pos] = points_to
+		
+	def conveyor_broken(self, pos:Position):
+		if self.conveyors_pointing_into[pos]:
+			ids = self.conveyor_ids.pop(pos)
+			# first update lines
+			first = True
+			index = 0
+			removal_bitboard =0
+			inverse_removal_bitboard = 0
+			for id in ids:
+				if first:
+					for j in range(len(self.conveyor_lines[id][1])):
+						remove_pos = self.conveyor_lines[id][1][-1-j]
+						removal_bitboard = self.set_bit(removal_bitboard, remove_pos)
+						if remove_pos == pos:
+							index =j
+							break
+					
+					inverse_removal_bitboard = self.max_int-removal_bitboard
+					#make our new conveyor line, don't want to include the position of the conveyor that has just been broken
+					removal_bitboard = self.clear_bit(removal_bitboard, pos)
+					# all the conveyors being cutoff
+					cutting_conveyors = self.conveyor_lines[id][1][-index:]
+					if cutting_conveyors:
+						self.conveyor_lines[self.conveyor_id] = (removal_bitboard,cutting_conveyors)
+						
+					first = False
+				self.conveyor_lines[id] = (self.conveyor_lines[id][0]& (inverse_removal_bitboard), self.conveyor_lines[id][1][:-1-index])
+			
+			
+			# then update id board
+			# updates pointing_to board
+			points_to = self.conveyor_pointing_to.pop(pos)
+			if points_to:
+				#updates pointing_into_board
+				self.conveyors_pointing_into[points_to].remove(pos)
+				# want to remove ids that we just broke, and change to the new id of the new branch
+				while self.conveyor_ids[points_to]:
+					self.conveyor_ids[points_to].difference_update(ids)
+					self.conveyor_ids[points_to].add(self.conveyor_id)
+					points_to= self.conveyor_pointing_to[points_to]
+					if points_to is None:
+						break
+			#we may have made a new conveyor line (its possible we haven't), so increment this counter, to make sure ids are unique
+			self.conveyor_id +=1
+		else:
+			#if nothing points into us, we are an end, so should only have one id, so dont need to update id board, apart from at our position
+			# and update the line we were in accordingly
+			id = self.conveyor_ids[pos].pop()
+			(bitboard, pos_list) = self.conveyor_lines[id]
+			bitboard = self.clear_bit(bitboard, pos)
+			self.conveyor_lines[id] = (bitboard, pos_list[1:])
+
 	def update_terrain_vision(self, ct:Controller):
 		"""Called after moving to map newly revealed terrain.""" 
 		# This acts as a way to fill in the dark areas of map memory.
@@ -259,6 +375,25 @@ class Bot:
 					if is_team:
 						self.read_marker(ct, building_id)
 				else:
+					
+					if etype in CONVEYOR_ENTITIES:
+						if etype==EntityType.BRIDGE:
+							points_to = ct.get_bridge_target(building_id)
+						else:
+							points_to = pos.add(ct.get_direction(building_id))
+						if not self.is_valid_position(points_to):
+							points_to = None
+						# if there was a conveyor but it was pointing somewhere else
+						if self.conveyor_ids[pos] and self.conveyor_pointing_to[pos]!=points_to:
+							self.conveyor_broken(pos)
+
+						if not self.conveyor_ids[pos]:
+							self.add_conveyor(pos, points_to)
+
+					#if there used to be a conveyor but it has been broken now
+					elif self.conveyor_ids[pos]:
+						self.conveyor_broken(pos)		
+
 					if is_team:
 						self.team_buildings_board|= pos_bitmask
 						if etype == EntityType.BRIDGE:
@@ -274,6 +409,8 @@ class Bot:
 								self.enemy_conveyor_board |= pos_bitmask
 						elif etype in TURRET_ENTITIES:
 							self.add_task(ct,BuilderTask.CUTOFF_ENEMY_TURRET, pos)
+			elif self.conveyor_ids[pos]:
+				self.conveyor_broken(pos)
 
 
 		print(f'Updating buildings took {ct.get_cpu_time_elapsed()}μs')
@@ -284,6 +421,7 @@ class Bot:
 
 	def turn_start(self,ct):
 		self.seen_this_round_board = 0
+		
 
 	def update_region(self, empty_bitboard:int, start_pos:Position):
 		region_bitboard = self.set_bit(0, start_pos)
@@ -299,7 +437,12 @@ class Bot:
 
 
 	def turn_end(self, ct:Controller):
-		
+		# print('Conveyor Lines')
+		# first = True
+		# for i in self.conveyor_lines:
+		# 	if first:
+		# 		first = False
+		# 	print(i, self.conveyor_lines[i][1])
 		if ct.get_cpu_time_elapsed()>2000:
 			eprint('Lagging, Round:', ct.get_current_round(), 'Bot:', ct.get_entity_type())
 

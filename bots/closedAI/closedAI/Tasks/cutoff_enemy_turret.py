@@ -62,7 +62,7 @@ def destroy_turret(self:BuilderBot, ct:Controller, reached_target:bool):
 		if ct.can_fire(self.target):
 			ct.fire(self.target)
 		b_id = ct.get_tile_building_id(self.target)
-		if not b_id or ct.get_entity_type(b_id) == EntityType.MARKER:
+		if not b_id:
 			# try and move on top of the spot
 			self.change_target(self.target, 0)
 			if ct.get_action_cooldown()==0 and ct.get_move_cooldown()==0 and ct.get_global_resources()>ct.get_gunner_cost():
