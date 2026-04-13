@@ -7,6 +7,7 @@ class Core(Bot):
 		self.num_spawned = 0
 		self.spawn_d = Direction.NORTH
 		self.spawned_defense = 0
+		self.spawn_defense = False
 
 	def turn_start(self, ct: Controller):
 		super().turn_start(ct)
@@ -37,10 +38,12 @@ class Core(Bot):
 				if ct.get_team() == ct.get_team(ent):
 					if ct.get_hp(ent)!= ct.get_max_hp(ent):
 						#emergency defense
-						if ct.can_spawn(ct.get_position().add(self.spawn_d)):
-							ct.spawn_builder(ct.get_position().add(self.spawn_d))
-							self.spawned_defense +=1
-
+						self.spawn_defense = True
+						
+		if self.spawn_defense:
+			if ct.can_spawn(ct.get_position().add(self.spawn_d)) and ct.get_global_resources()[0]-ct.get_builder_bot_cost()[0]>ct.get_gunner_cost()[0]*1.5:
+				ct.spawn_builder(ct.get_position().add(self.spawn_d))
+				self.spawned_defense +=1
 
 		for x in range(-2, 3):
 			for y in range(-2, 3):

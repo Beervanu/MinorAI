@@ -100,4 +100,4 @@ def is_valid(self: BuilderBot, ct:Controller, task:TaskData)->bool:
 	return False
 
 phases = [set_target, remove_feeding_conveyor, destroy_turret]
-do_once = False
+do_once = True

@@ -306,7 +306,7 @@ class Bot:
 	def get_task_identifier(self, task:Task, data:Any):
 		identifier = 0
 		match task:
-			case BuilderTask.FOUND_AX_ORE | BuilderTask.FOUND_TI_ORE | BuilderTask.BUILD_BRIDGE | BuilderTask.PLACE_SENTINEL:
+			case BuilderTask.FOUND_AX_ORE | BuilderTask.FOUND_TI_ORE | BuilderTask.BUILD_BRIDGE | BuilderTask.PLACE_SENTINEL | BuilderTask.CUTOFF_ENEMY_TURRET:
 				identifier = data.y*self.map_width + data.x
 
 		return identifier
