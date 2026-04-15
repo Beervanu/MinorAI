@@ -20,3 +20,4 @@ class TaskData(TypedDict):
 	data: Any
 	identifier: int
 	interruptable: bool
+	timeout: int

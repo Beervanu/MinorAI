@@ -1,7 +1,7 @@
 from cambc import Controller
 from .Markers import *
 from .Tasktypes import *
-from cambc import Position,EntityType,Environment
+from cambc import Position,EntityType,Environment, Team
 from .Constants import *
 from .Tasks import DO_ONCE_TASKS, builder_tasks
 from .MapSymmetry import *
@@ -9,20 +9,29 @@ from math import log2, floor
 from .helper_functions import eprint
 from collections import defaultdict
 
+class ConveyorInfo(TypedDict):
+	bitboard: int
+	positions: list[Position]
+	harvesters: set[Position]
+	feeds: EntityType| None
+	feeds_team: Team| None
 
 class Bot:
 	def __init__(self, ct: Controller, entity_type:EntityType):
+		self.core_pos = Position(0,0)
 		self.entity_type = entity_type
 		self.task_num = 0
 		self.count = 0
-
+		self.core_mask = 0
+		self.enemy_core_mask = 0
+		self.team = ct.get_team()
 		# Cache map dimensions gloabally for this unit
 		self.map_width = ct.get_map_width()
 		self.map_height = ct.get_map_height()
 		self.task: TaskData = None
 		self.task_backlog: list[TaskData] = []
 		self.task_priority: dict[Task, int]
-		self.done_tasks: list[TaskData] = []
+		self.invalid_tasks: list[TaskData] = []
 		# Initialisation of bitboards for different map features
 		self.seen_board = 0
 		self.seen_symmetry_boards = (0,0,0)
@@ -35,20 +44,21 @@ class Bot:
 		self.walkable_board = 0
 		self.team_buildings_board = 0
 		self.enemy_buildings_board = 0
-		self.team_bridges_board = 0
 		self.units_board = 0
 		self.ore_adjacent_board = 0
 		self.seen_this_round_board = 0
 		self.team_harvesters_board = 0
 		self.harvesters_board = 0
 		self.enemy_conveyor_board = 0
-		
+		self.team_conveyors_board = 0
+
 		self.conveyor_id = 0
 		self.conveyor_ids:defaultdict[Position, set[int]] = defaultdict(set)
 		self.conveyor_pointing_to:defaultdict[Position, Position|None] = defaultdict(lambda: None)
 		self.conveyors_pointing_into:defaultdict[Position, set[Position]] = defaultdict(set)
+		self.dormant_conveyor_pointing_to:defaultdict[Position, Position|None] = defaultdict(lambda: None)
 		# each conveyor line has a unique id and has a bitboard, number of harvesters that feed it, and a list of positions (in order)
-		self.conveyor_lines:dict[int, tuple[int,set[Position],list[Position]]] = {}
+		self.conveyor_lines:dict[int, ConveyorInfo] = {}
 		# 1 1 1
 		# 1 0 1 mask
 		# 1 1 1 
@@ -139,6 +149,14 @@ class Bot:
 		bitmask = 1 << index
 		return bitmask
 
+	def get_cardinal_bitmask(self, pos:Position)-> int:
+		bitb = 0
+		for d in CARDINAL_DIRECTIONS:
+			check_pos=pos.add(d)
+			if self.is_valid_position(check_pos):
+				bitb = self.set_bit(bitb, check_pos)
+		return bitb
+
 	def set_bit(self, bitboard: int, pos: Position) -> int:
 		"""Turns the bit ON at a given Position and returns the new board."""
 		# Still maps the input position to the correct index for the bitboard. Nothing has changed here.
@@ -182,11 +200,17 @@ class Bot:
 		"""Returns true if in map bounds"""
 		return 0<=pos.x<self.map_width and 0<=pos.y<self.map_height
 
-	
+	# Static so it can be alled through the class without needing to pass in self
+	@staticmethod
+	def chebyshev(a: Position, b: Position) -> int:
+		"""
+		Chebyshev distance - admissible heuristic (Never overestimates the true path length) for 8-directional movement.
+		"""
+		return max(abs(a.x - b.x), abs(a.y - b.y))
+
 	def add_conveyor(self, pos:Position, points_to:Position|None):
 		"""Adds a conveyor/bridge to our data structure, at position pos, pointing to points_to
 		points_to must be a valid position, or None if it points off the map"""
-
 		bitmask = self.get_bitmask(pos)
 
 		# checking for neighbouring harvesters
@@ -206,168 +230,294 @@ class Bot:
 				self.conveyor_ids[pos].update(ids)
 				# add this position to each of those lines
 				for id in ids:
-					(bitboard, harvesters,pos_list) = self.conveyor_lines[id]
-					bitboard |= bitmask
-					pos_list.append(pos)
-					self.conveyor_lines[id] = (bitboard, harvesters|neighbouring_harvesters, pos_list)
+					self.conveyor_lines[id]['bitboard'] |= bitmask
+					self.conveyor_lines[id]['positions'].append(pos)
+					self.conveyor_lines[id]['harvesters'] |= neighbouring_harvesters
 		else:
 			# if there are no lines pointing into this position, make a new line
 			self.conveyor_ids[pos].add(self.conveyor_id)
-			self.conveyor_lines[self.conveyor_id] = (bitmask,neighbouring_harvesters , [pos])
+			self.conveyor_lines[self.conveyor_id] = {
+				'bitboard': bitmask,
+				'harvesters':neighbouring_harvesters,
+				'positions': [pos],
+				'feeds': None,
+				'feeds_team': None
+			}
 			self.conveyor_id +=1
 		
 		#if we dont point off the board
 		if points_to:
-			self.conveyors_pointing_into[points_to].add(pos)
-			#if it points to another conveyor
-			if self.conveyor_ids[points_to]:
-				remove_ids = set()
-				add_ids = self.conveyor_ids[pos]
-				bitb=0
-				line = []
-				found_bitboard = 0
-				connected_harvesters =set()
-				for id in self.conveyor_ids[points_to]:
-					(bitb,harvesters, line) = self.conveyor_lines[id]
-					connected_harvesters |=harvesters
-					# if we are adding to the end of the line - there will only be one id
-					if line[0] == points_to:
-						(found_bitboard,found_list) = (bitb, line)
-						remove_id = id
-						remove_ids = set([remove_id])
-						break
-				
-				#if we are adding to the middle of a line
-				if not found_bitboard:
-					remove_bitboard =self.max_int
-					for i in range(len(line)):
-						if line[i] == points_to:
-							found_list = line[i:]
-							found_bitboard = bitb&remove_bitboard
+			#if we are making a loop (then we are pointing to somewhere upstream), so don't expose where we are pointing to 
+			# in order to keep everything running smoothly we do something similar as if we are pointing off the board.
+			if self.conveyor_ids[pos] & self.conveyor_ids[points_to]:
+				self.dormant_conveyor_pointing_to[pos] = points_to
+			else: 
+				self.conveyors_pointing_into[points_to].add(pos)
+				#if it points to another conveyor
+				if self.conveyor_ids[points_to]:
+					remove_ids = set()
+					add_ids = self.conveyor_ids[pos]
+					bitb=0
+					line = []
+					found_bitboard = 0
+					found_list = []
+					connected_harvesters =set()
+					feeds = feeds_team = None
+					for id in self.conveyor_ids[points_to]:
+						bitb = self.conveyor_lines[id]['bitboard']
+						line = self.conveyor_lines[id]['positions']
+						connected_harvesters |=self.conveyor_lines[id]['harvesters']
+						feeds = self.conveyor_lines[id]['feeds']
+						feeds_team = self.conveyor_lines[id]['feeds_team']
+						# if we are adding to the end of the line - there will only be one id
+						if line[0] == points_to:
+							(found_bitboard,found_list) = (bitb, line)
+							remove_id = id
+							remove_ids = set([remove_id])
 							break
-						remove_bitboard = self.clear_bit(remove_bitboard, line[i])
+					
+					#if we are adding to the middle of a line
+					if not found_bitboard:
+						remove_bitboard =self.max_int
+						for i in range(len(line)):
+							if line[i] == points_to:
+								found_list = line[i:]
+								found_bitboard = bitb&remove_bitboard
+								break
+							remove_bitboard = self.clear_bit(remove_bitboard, line[i])
 
-				#in the special case where we are only joining two line ends, choose the shorter one to update ids
-				# (remove ids only has non zero length if we are subsuming a line)
-				if len(self.conveyor_ids[pos])==1 and remove_ids:
-					incoming_id = 0
-					outgoing_id = remove_id
-					for id in self.conveyor_ids[pos]:
-						incoming_id = id
-						break
-					
-					incoming_bitb,incoming_harvesters, incoming_line=self.conveyor_lines[incoming_id]
-					outgoing_bitb,outgoing_harvesters, outgoing_line = self.conveyor_lines[outgoing_id]
-					if len(incoming_line) < len(outgoing_line):
-						keep_id = outgoing_id
-						remove_id = incoming_id
-						update_pos_list = incoming_line
-					else:
-						keep_id=incoming_id
-						remove_id = outgoing_id
-						update_pos_list = outgoing_line
-					
-					self.conveyor_lines[keep_id] = (incoming_bitb|outgoing_bitb,incoming_harvesters|outgoing_harvesters, incoming_line+outgoing_line)
-					del self.conveyor_lines[remove_id]
-					for p in update_pos_list:
-						self.conveyor_ids[p].remove(remove_id)
-						self.conveyor_ids[p].add(keep_id)
-				else:
-					if remove_ids:
+					#in the special case where we are only joining two line ends, choose the shorter one to update ids
+					# (remove ids only has non zero length if we are subsuming a line)
+					if len(self.conveyor_ids[pos])==1 and remove_ids:
+						incoming_id = 0
+						outgoing_id = remove_id
+						for id in self.conveyor_ids[pos]:
+							incoming_id = id
+							break
+						
+						incoming_bitb=self.conveyor_lines[incoming_id]['bitboard']
+						incoming_harvesters=self.conveyor_lines[incoming_id]['harvesters']
+						incoming_line=self.conveyor_lines[incoming_id]['positions']
+
+						outgoing_bitb=self.conveyor_lines[outgoing_id]['bitboard']
+						outgoing_harvesters=self.conveyor_lines[outgoing_id]['harvesters']
+						outgoing_line=self.conveyor_lines[outgoing_id]['positions']
+						if len(incoming_line) < len(outgoing_line):
+							keep_id = outgoing_id
+							remove_id = incoming_id
+							update_pos_list = incoming_line
+						else:
+							keep_id=incoming_id
+							remove_id = outgoing_id
+							update_pos_list = outgoing_line
+						
+						self.conveyor_lines[keep_id].update({
+							'bitboard': incoming_bitb|outgoing_bitb,
+							'harvesters': incoming_harvesters|outgoing_harvesters,
+							'positions': incoming_line+outgoing_line,
+							'feeds': self.conveyor_lines[outgoing_id]['feeds'],
+							'feeds_team': self.conveyor_lines[outgoing_id]['feeds_team']
+
+						})
 						del self.conveyor_lines[remove_id]
-					#update the incoming conveyor lines
-					for id in self.conveyor_ids[pos]:
-						(bitboard,harvesters,  line) = self.conveyor_lines[id]
-						self.conveyor_lines[id] = (bitboard|found_bitboard, harvesters|connected_harvesters,line+found_list)					
-					for p in found_list:
-						self.conveyor_ids[p].difference(remove_ids)
-						self.conveyor_ids[p].update(add_ids)
-		self.conveyor_pointing_to[pos] = points_to
-		
-	def conveyor_broken(self, pos:Position):
+						for p in update_pos_list:
+							self.conveyor_ids[p].remove(remove_id)
+							self.conveyor_ids[p].add(keep_id)
+					else:
+						if remove_ids:
+							del self.conveyor_lines[remove_id]
+						#update the incoming conveyor lines
+						for id in self.conveyor_ids[pos]:
+							self.conveyor_lines[id]['bitboard']|=found_bitboard
+							self.conveyor_lines[id]['harvesters'] |=connected_harvesters
+							self.conveyor_lines[id]['positions'] += found_list
+							self.conveyor_lines[id]['feeds'] = feeds	
+							self.conveyor_lines[id]['feeds_team'] = feeds_team				
+						for p in found_list:
+							self.conveyor_ids[p].difference_update(remove_ids)
+							self.conveyor_ids[p].update(add_ids)
+				self.conveyor_pointing_to[pos] = points_to
+	
+	def update_downstream_ids(self, pos:Position, remove_ids:set[int]=set(), add_ids:set[int]=set()):
+		points_to = pos
+		visited = set()
+		while self.conveyor_ids[points_to]:
+			self.conveyor_ids[points_to].difference_update(remove_ids)
+			self.conveyor_ids[points_to].update(add_ids)
+			points_to= self.conveyor_pointing_to[points_to]
+			if points_to is None or (points_to in visited):
+				break
+
+			visited.add(points_to)
+
+	def conveyor_broken(self, ct:Controller, pos:Position):
 		# if there are conveyors pointing into us
 		if self.conveyors_pointing_into[pos]:
+			made_new_line = False
 			ids = self.conveyor_ids.pop(pos)
 			# first update lines
-			first = True
 			index = 0
 			removal_bitboard =0
 			inverse_removal_bitboard = 0
 			#for every line that runs through this position
 			harvester_info= []
+			remaining_harvesters = set()
 			for id in ids:
 				#finding the downstream positions from here
-				if first:
-					for j in range(len(self.conveyor_lines[id][2])):
-						remove_pos = self.conveyor_lines[id][2][-1-j]
-						removal_bitboard = self.set_bit(removal_bitboard, remove_pos)
-						if remove_pos == pos:
-							index =j
-							break
-					
-					inverse_removal_bitboard = self.max_int-removal_bitboard
-					#make our new conveyor line, don't want to include the position of the conveyor that has just been broken
-					removal_bitboard = self.clear_bit(removal_bitboard, pos)
-					# all the conveyors being cutoff
-					cutting_conveyors = self.conveyor_lines[id][2][-index:]
-					connected_harvesters = self.conveyor_lines[id][1]
-					for harvester_pos in connected_harvesters:
-						bitb = 0
-						for d in CARDINAL_DIRECTIONS:
-							check_pos=harvester_pos.add(d)
-							if self.is_valid_position(check_pos):
-								bitb = self.set_bit(bitb, check_pos)
-						harvester_info.append((check_pos, bitb))
+				for j in range(len(self.conveyor_lines[id]['positions'])):
+					remove_pos = self.conveyor_lines[id]['positions'][-1-j]
+					removal_bitboard = self.set_bit(removal_bitboard, remove_pos)
+					if remove_pos == pos:
+						index =j
+						break
+				
+				inverse_removal_bitboard = self.max_int-removal_bitboard
+				#make our new conveyor line, don't want to include the position of the conveyor that has just been broken
+				removal_bitboard = self.clear_bit(removal_bitboard, pos)
+				# all the conveyors being cutoff
+				cutting_conveyors = self.conveyor_lines[id]['positions'][-index:]
+				connected_harvesters = self.conveyor_lines[id]['harvesters']
+				for harvester_pos in connected_harvesters:
+					harvester_info.append((harvester_pos, self.get_cardinal_bitmask(harvester_pos)))
 
-								
-					if cutting_conveyors and self.conveyor_ids[cutting_conveyors[0]]:
-						harvesters = set()
-						for p, bitb in harvester_info:
-							if bitb&removal_bitboard:
-								harvesters.add(p)
-						self.conveyor_lines[self.conveyor_id] = (removal_bitboard,harvesters,cutting_conveyors)
-						
-					first = False
-				line_bitboard = self.conveyor_lines[id][0]& (inverse_removal_bitboard)
-				harvesters = set()
-				for p, bitb in harvester_info:
-					if bitb&line_bitboard:
-						harvesters.add(p)
-				self.conveyor_lines[id] = (line_bitboard, harvesters,self.conveyor_lines[id][2][:-1-index])
+				# if there is a part being cutoff downstream, and that part isn't already in some other line
+				# make a new line
+				made_new_line = index and not (self.conveyor_ids[cutting_conveyors[0]]-ids)
+				if made_new_line:
+					harvesters = set()
+					for p, bitb in harvester_info:
+						if bitb&removal_bitboard:
+							harvesters.add(p)
+					self.conveyor_lines[self.conveyor_id]= {
+						'bitboard':removal_bitboard,
+						'harvesters':harvesters,
+						'positions':cutting_conveyors,
+						'feeds':None,
+						'feeds_team': None
+					}
+				break
+			upstream_lines_bitboard = 0
+			for id in ids:
+				line_bitboard = self.conveyor_lines[id]['bitboard']& (inverse_removal_bitboard)
+				self.conveyor_lines[id]['bitboard'] = line_bitboard
+				upstream_lines_bitboard|=line_bitboard
+			
+			upstream_harvesters = set()
+			for (p,bitb) in harvester_info:
+				if bitb&upstream_lines_bitboard:
+					upstream_harvesters.add(p)
+			for id in ids:
+				self.conveyor_lines[id].update({
+					'harvesters': upstream_harvesters,
+					'positions': self.conveyor_lines[id]['positions'][:-1-index],
+					'feeds': None,
+					'feeds_team': None
+				})
+			if upstream_harvesters and self.entity_type == EntityType.BUILDER_BOT:
+				self.add_task(ct, BuilderTask.BUILD_BRIDGE, pos, False)
 			
 			
 			# then update id board
 			# updates pointing_to board
-			points_to = self.conveyor_pointing_to.pop(pos)
+			points_to = None
+			if self.conveyor_pointing_to[pos]:
+				points_to = self.conveyor_pointing_to.pop(pos)
+			self.dormant_conveyor_pointing_to[pos] = None
 			if points_to:
 				#updates pointing_into_board
 				self.conveyors_pointing_into[points_to].remove(pos)
-				# want to remove ids that we just broke, and change to the new id of the new branch
+				# want to remove ids of the lines that just broke, and add the new id of the new branch if it was made
+				add_ids = set([self.conveyor_id]) if made_new_line else set()
+				update_lines_ids = set()
+				pos_list = []
+				bitb = 0
+				old_pos = points_to
 				while self.conveyor_ids[points_to]:
+					#used to keep track of the points downstream of a dormant point, to later update the lines
+					pos_list.append(points_to)
+					bitb = self.set_bit(bitb, points_to)
+
 					self.conveyor_ids[points_to].difference_update(ids)
-					self.conveyor_ids[points_to].add(self.conveyor_id)
+					self.conveyor_ids[points_to].update(add_ids)
+					old_pos = points_to
 					points_to= self.conveyor_pointing_to[points_to]
 					if points_to is None:
-						break
-			#we may have made a new conveyor line (its possible we haven't), so increment this counter, to make sure ids are unique
-			self.conveyor_id +=1
+						dormant_points_to = self.dormant_conveyor_pointing_to[old_pos]
+						# if we have broken a loop
+						# self.conveyor_ids[dormant_points_to] is always a subset of ids if we have broken a loop 
+						if dormant_points_to and (shared_ids:=self.conveyor_ids[dormant_points_to] & ids):
+							# eprint('broke a loop, round: ', ct.get_current_round(), self.conveyor_ids[old_pos])
+							#ids of lines through dormant pointer
+							update_lines_ids = self.conveyor_ids[old_pos]
+							pos_list = []
+							bitb = 0							
+							# if the place the dormant was pointing to was not an end, we would like to keep those ids on the following points,
+							# if it was an end we are deleting those lines
+							if self.conveyors_pointing_into[dormant_points_to]:
+								ids.difference_update(shared_ids)
+							else:
+								#this should only be one id
+								if len(self.conveyor_ids[dormant_points_to]) != 1:
+									raise Exception()
+								for id in self.conveyor_ids[dormant_points_to]:
+									del self.conveyor_lines[id]
+							#remove the dormant point
+							self.conveyor_pointing_to[old_pos] = dormant_points_to
+							self.dormant_conveyor_pointing_to[old_pos] = None
+							self.conveyors_pointing_into[dormant_points_to].add(old_pos)
+									
+
+							add_ids.update(self.conveyor_ids[old_pos])
+							points_to = dormant_points_to
+						else:
+							break
+				last_feeds = None
+				last_feeds_team = None
+				last_connected_harvesters = set()
+				for id in self.conveyor_ids[old_pos]:
+					last_feeds = self.conveyor_lines[id]['feeds']
+					last_feeds_team = self.conveyor_lines[id]['feeds_team']
+					last_connected_harvesters = self.conveyor_lines[id]['harvesters']
+					break
+
+				for id in update_lines_ids:
+					self.conveyor_lines[id]['positions'] += pos_list
+					self.conveyor_lines[id]['bitboard'] |= bitb
+					self.conveyor_lines[id].update({
+						'feeds': last_feeds,
+						'feeds_team': last_feeds_team,
+						'harvesters': last_connected_harvesters
+					})
+			#we may have made a new conveyor line, increment to keep ids unique
+			if made_new_line:
+				self.conveyor_id +=1
 		else:
 			#if nothing points into us, we are an end, so should only have one id, so dont need to update id board, apart from at our position
 			# and update the line we were in accordingly
 			id = self.conveyor_ids[pos].pop()
-			(bitboard, harvesters, pos_list) = self.conveyor_lines[id]
-			if bitboard:
-				n_harvesters = set()
-				# if one of the harvesters
-				bitboard = self.clear_bit(bitboard, pos)
-				for harvester_pos in harvesters:
-					for d in CARDINAL_DIRECTIONS:
-						check_pos=harvester_pos.add(d)
-						if self.is_valid_position(check_pos) and self.check_bit(bitboard, check_pos):
-							n_harvesters.add(harvester_pos)
-							break
-				self.conveyor_lines[id] = (bitboard,n_harvesters, pos_list[1:])
+			points_to = self.conveyor_pointing_to.pop(pos)
+			if points_to:
+				self.conveyors_pointing_into[points_to].remove(pos)
+			bitboard = self.conveyor_lines[id]['bitboard']
+			harvesters = self.conveyor_lines[id]['harvesters']
+			pos_list = self.conveyor_lines[id]['positions']
+			if pos_list[1:]:
+				#if its already part of another line get rid of this line
+				if self.conveyor_ids[pos_list[1]] - set([id]):
+					self.update_downstream_ids(pos_list[1], set([id]))
+					del self.conveyor_lines[id]				
+				else:
+					n_harvesters = set()
+					bitboard = self.clear_bit(bitboard, pos)
+					for harvester_pos in harvesters:
+						for d in CARDINAL_DIRECTIONS:
+							check_pos=harvester_pos.add(d)
+							if self.is_valid_position(check_pos) and self.check_bit(bitboard, check_pos):
+								n_harvesters.add(harvester_pos)
+								break
+					self.conveyor_lines[id].update({'bitboard': bitboard, 'harvesters':n_harvesters, 'positions': pos_list[1:]})
 			else:
+				#if this was the only thing in the line
 				del self.conveyor_lines[id]
 
 	def update_terrain_vision(self, ct:Controller):
@@ -415,12 +565,10 @@ class Bot:
 				self.axionite_ores_board, self.axionite_ores_symmetry_boards = self.set_symmetry_bit(self.axionite_ores_board,self.axionite_ores_symmetry_boards,pos)
 			
 			if env == Environment.ORE_AXIONITE or env == Environment.ORE_TITANIUM:
-				for d in CARDINAL_DIRECTIONS:
-					check_pos = pos.add(d)
-					if self.is_valid_position(check_pos):
-						self.ore_adjacent_board = self.set_bit(self.ore_adjacent_board, check_pos)
+				self.ore_adjacent_board |= self.get_cardinal_bitmask(current_pos)
 			self.seen_board,self.seen_symmetry_boards = self.set_symmetry_bit(self.seen_board,self.seen_symmetry_boards, pos)
 		print(f'Updating environment took {ct.get_cpu_time_elapsed()}μs')
+		harvester_positions:list[Position] = []
 		#then update buildings
 		for pos in ct.get_nearby_tiles():
 			pos_bitmask = self.get_bitmask(pos)
@@ -444,59 +592,98 @@ class Bot:
 			# update boards
 			self.team_buildings_board &= inverted_pos_bitmask
 			self.enemy_buildings_board&= inverted_pos_bitmask
-			self.team_bridges_board &= inverted_pos_bitmask
 			self.team_harvesters_board &= inverted_pos_bitmask
 			self.enemy_conveyor_board&= inverted_pos_bitmask
+			self.team_conveyors_board &= inverted_pos_bitmask
+			old_harvesters = self.harvesters_board
 			self.harvesters_board&= inverted_pos_bitmask
 			building_id = ct.get_tile_building_id(pos)
 			if building_id:
 				etype = ct.get_entity_type(building_id)
-				is_team: bool = ct.get_team() == ct.get_team(building_id)
+				team = ct.get_team(building_id)
+				is_team: bool = ct.get_team() == team
+				if etype in [EntityType.CORE]+TURRET_ENTITIES:
+					for p in self.conveyors_pointing_into[pos]:
+						ids = self.conveyor_ids[p]
+						for id in ids:
+							#if they have already been updated
+							if self.conveyor_lines[id]['feeds'] == etype:
+								break
+							self.conveyor_lines[id].update({
+								'feeds': etype,
+								'feeds_team': team
+							})
+				if etype in CONVEYOR_ENTITIES:
+					if etype==EntityType.BRIDGE:
+						points_to = ct.get_bridge_target(building_id)
+					else:
+						points_to = pos.add(ct.get_direction(building_id))
+					if not self.is_valid_position(points_to):
+						points_to = None
+					# if there was a conveyor but it was pointing somewhere else
+					if self.conveyor_ids[pos] and self.conveyor_pointing_to[pos]!=points_to:
+						self.conveyor_broken(ct, pos)
+
+					if not self.conveyor_ids[pos]:
+						self.add_conveyor(pos, points_to)
+
+				#if there used to be a conveyor but it has been broken now
+				elif self.conveyor_ids[pos]:
+					self.conveyor_broken(ct, pos)
+				if etype == EntityType.HARVESTER:
+					harvester_positions.append(pos)
+					if not self.check_bit(old_harvesters, pos):
+						# add harvesters to conveyor lines
+						bitb = self.get_cardinal_bitmask(pos)
+						add_to = set()
+						for i in self.conveyor_lines:
+							if self.conveyor_lines[i]['bitboard']&bitb:
+								add_to.update(self.conveyor_ids[self.conveyor_lines[i]['positions'][-1]])
+						for i in add_to:
+							self.conveyor_lines[i]['harvesters'].add(pos)
+						self.harvesters_board |= pos_bitmask
+					
+
 				if etype == EntityType.MARKER:
 					self.walkable_board |= pos_bitmask
 					if is_team:
 						self.read_marker(ct, building_id)
 				else:
-					
-					if etype in CONVEYOR_ENTITIES:
-						if etype==EntityType.BRIDGE:
-							points_to = ct.get_bridge_target(building_id)
-						else:
-							points_to = pos.add(ct.get_direction(building_id))
-						if not self.is_valid_position(points_to):
-							points_to = None
-						# if there was a conveyor but it was pointing somewhere else
-						if self.conveyor_ids[pos] and self.conveyor_pointing_to[pos]!=points_to:
-							self.conveyor_broken(pos)
-
-						if not self.conveyor_ids[pos]:
-							self.add_conveyor(pos, points_to)
-
-					#if there used to be a conveyor but it has been broken now
-					elif self.conveyor_ids[pos]:
-						self.conveyor_broken(pos)
-
-					if etype == EntityType.HARVESTER:
-						self.harvesters_board |= pos_bitmask
-
 					if is_team:
 						self.team_buildings_board|= pos_bitmask
-						if etype == EntityType.BRIDGE:
-							self.team_bridges_board |= pos_bitmask
-						elif etype == EntityType.HARVESTER:
+						if etype == EntityType.HARVESTER:
 							self.team_harvesters_board |= pos_bitmask
+						elif etype in CONVEYOR_ENTITIES:
+							self.team_conveyors_board |= pos_bitmask
 					else:
 						self.enemy_buildings_board|= pos_bitmask
 						if etype in CONVEYOR_ENTITIES:
 							if self.ore_adjacent_board&pos_bitmask and is_builder_bot:
 								self.add_task(ct,BuilderTask.PLACE_SENTINEL, pos)
-							if etype != EntityType.BRIDGE:
-								self.enemy_conveyor_board |= pos_bitmask
+							self.enemy_conveyor_board |= pos_bitmask
 						elif etype in TURRET_ENTITIES:
 							self.add_task(ct,BuilderTask.CUTOFF_ENEMY_TURRET, pos)
 			elif self.conveyor_ids[pos]:
-				self.conveyor_broken(pos)
+				self.conveyor_broken(ct, pos)
 
+		#build conveyors from harvesters
+		for p in harvester_positions:
+			# check no one else has already built a conveyor from this ore
+			valid_pos = []
+
+			for dir in CARDINAL_DIRECTIONS:
+				check_pos = p.add(dir)
+				if not self.is_valid_position(check_pos):
+					continue
+				if self.check_bit(self.team_conveyors_board, check_pos):
+					valid_pos = []
+					break
+				valid_pos.append(check_pos)
+			valid_pos.sort(key=lambda po: self.chebyshev(self.core_pos, po))
+			for pos in valid_pos:
+				if self.check_bit(self.walkable_board, pos) and not self.check_bit(self.axionite_ores_board|self.titanium_ores_board, pos):
+					self.add_task(ct,BuilderTask.BUILD_BRIDGE, (pos))
+					break
 
 		print(f'Updating buildings took {ct.get_cpu_time_elapsed()}μs')
 		if old_walkable_board!=self.walkable_board:
@@ -520,14 +707,29 @@ class Bot:
 			region_bitboard&=empty_bitboard
 		return region_bitboard
 
+	def draw_conveyor(self, ct:Controller, id:int, colour: tuple[int,int,int]):
+		try:
+			for p in self.conveyor_lines[id]['positions']:
+				ct.draw_indicator_dot(p, colour[0],colour[1], colour[2])
+				if points_to:=self.conveyor_pointing_to[p]:
+					ct.draw_indicator_line(p, points_to, colour[0],colour[1], colour[2])
+		except KeyError:
+			eprint('failed to draw')
 
 	def turn_end(self, ct:Controller):
-		print('Conveyor Lines')
-		first = True
-		for i in self.conveyor_lines:
-			if first:
-				first = False
-			print(i, self.conveyor_lines[i][2], self.conveyor_lines[i][1])
+
+		# print('Conveyor Lines')
+		# first = True
+		# colour_ind = 0
+		# colours = [(0,0,255), (0,255,0), (0,0,255), (255,0,255), (0,255,255), (255,255,0), (0,0,127), (0,127,0), (127,0,0), (0,0,0), (255,255,255)]
+		# for i in self.conveyor_lines:
+		# 	print(i,', '.join ([f'({p.x} {p.y})' for p in self.conveyor_lines[i]['positions']]), self.conveyor_lines[i]['harvesters'])
+		# 	self.draw_conveyor(ct, i, colours[colour_ind])
+		# 	colour_ind +=1
+		# 	colour_ind%= len(colours)
+		# for i in self.conveyor_ids:
+		# 	if self.conveyor_ids[i]:
+		# 		print(i.x, i.y, self.conveyor_ids[i])
 		if ct.get_cpu_time_elapsed()>2000:
 			eprint('Lagging, Round:', ct.get_current_round(), 'Bot:', ct.get_entity_type())
 
@@ -543,28 +745,30 @@ class Bot:
 		"""Adds the given task, while checking whether it is valid, or already done"""
 
 		identifier = self.get_task_identifier(task, data)
-		taskdata:TaskData = {"type":task, "data":data, "identifier": identifier, "interruptable": interruptable, "uid":self.task_num}
+		taskdata:TaskData = {"type":task, "data":data, "identifier": identifier, "interruptable": interruptable, "uid":self.task_num, "timeout":0}
 		if not builder_tasks[task]['is_valid'](self,ct,taskdata):
 			return False
-		if task in DO_ONCE_TASKS:
-			check_tasks = self.done_tasks+self.task_backlog
-			if self.task:
-				check_tasks.append(self.task)
-			for t in check_tasks:
-				if t['identifier'] == identifier:
-					print('Task already done or added: ', task)
-					return False
+		round = ct.get_current_round()
+		invalid_tasks = []
+		for t in self.invalid_tasks:
+			if t['timeout']>=round:
+				invalid_tasks.append(t)
+		self.invalid_tasks = invalid_tasks
+		check_tasks = self.invalid_tasks+self.task_backlog
+		if self.task:
+			check_tasks.append(self.task)
+		
+
+		for t in check_tasks:
+			
+			if t['type'] == task and t['identifier'] == identifier:
+				print('Task already done or added: ', task)
+				return False
 		
 		# else add it to backlog
 		self.task_backlog.append(taskdata)
 		self.task_num+=1
 		return False
-	
-		# # if higher task priority, bench the current task and switch to it
-			# if self.task_priority[self.task['type']] < self.task_priority[task]:
-			# 	self.task_backlog.insert(0, self.task)
-			# 	self.task = {'type':task, 'data':data}
-			# 	return True
 
 	def get_task_secondary_priority(self, ct:Controller, task:TaskData):
 		prio = float('inf')
@@ -581,21 +785,21 @@ class Bot:
 			if builder_tasks[task['type']]['is_valid'](self,ct,task):
 				new_backlog.append(task)
 			elif task['type'] in DO_ONCE_TASKS:
-				self.done_tasks.append(task)
+				task['timeout'] = ct.get_current_round()+10
+				self.invalid_tasks.append(task)
 		self.task_backlog = new_backlog
 		
 
 
 	def task_complete(self,ct:Controller):
-		if self.task['type'] in DO_ONCE_TASKS:
-			self.done_tasks.append(self.task)
+		
 		if self.task_backlog:
 			self.cull_task_backlog(ct)
 			self.sort_task_backlog(ct)
 			self.task = self.task_backlog.pop(0)
 			print(f'New Task: {self.task['type']}, Data: {self.task['data']}, I: {int(self.task["interruptable"])}')
 		else:
-			eprint("No new task - this is bad tell Jose")
+			eprint("No new task: Round", ct.get_current_round() , self.entity_type)
 			print("no new task")
 
 	def rotational_flip(self, board:int) -> int:

@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 if TYPE_CHECKING:
 	from ..BuilderBot import BuilderBot
-
+from ..helper_functions import eprint
 from ..Tasktypes import BuilderTask, TaskData
 from cambc import Controller, Direction, EntityType, GameConstants
 from ..Constants import DIRECTIONS, CARDINAL_DIRECTIONS
@@ -16,6 +16,9 @@ def set_target(self: BuilderBot, ct:Controller, reached_target: bool):
 	return True
 
 def attack(self: BuilderBot, ct:Controller, reached_target: bool):
+	if not is_valid(self,ct, self.task):
+		self.task_complete(ct)
+		return True
 	if reached_target:
 		if self.check_bit(self.enemy_buildings_board, self.target):
 			if ct.can_fire(self.target):
@@ -33,6 +36,10 @@ def attack(self: BuilderBot, ct:Controller, reached_target: bool):
 		return True
 
 def place_sentinel(self: BuilderBot, ct:Controller, reached_target: bool):
+	if not is_valid(self,ct, self.task):
+		self.task_complete(ct)
+		return True
+
 	#if someone places something under us, go back to attacking it 
 	if self.check_bit(self.enemy_buildings_board, self.target):
 		self.phase-=1
@@ -92,7 +99,14 @@ def place_sentinel(self: BuilderBot, ct:Controller, reached_target: bool):
 			self.task_complete(ct)
 
 def is_valid(self:BuilderBot,ct:Controller, task:TaskData)->bool:
-	return bool(self.check_bit(self.connected_region, task['data']))
+	if not self.check_bit(self.connected_region, task['data']):
+		return False
+	for p in self.conveyors_pointing_into[task['data']]:
+		for id in self.conveyor_ids[p]:
+			if self.conveyor_lines[id]['harvesters']:
+				return True
+			break
+	return False
 
 phases = [set_target, attack, place_sentinel]
 do_once = True

@@ -12,7 +12,6 @@ class Core(Bot):
 	def turn_start(self, ct: Controller):
 		super().turn_start(ct)
 		round = ct.get_current_round()
-
 		if self.num_spawned < 2 or (self.num_spawned<4 and round>15):
 
 			spawn_pos = ct.get_position().add(self.spawn_d)
@@ -40,7 +39,7 @@ class Core(Bot):
 						#emergency defense
 						self.spawn_defense = True
 						
-		if self.spawn_defense:
+		if self.spawn_defense and self.spawned_defense<2:
 			if ct.can_spawn(ct.get_position().add(self.spawn_d)) and ct.get_global_resources()[0]-ct.get_builder_bot_cost()[0]>ct.get_gunner_cost()[0]*1.5:
 				ct.spawn_builder(ct.get_position().add(self.spawn_d))
 				self.spawned_defense +=1

@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 if TYPE_CHECKING:
 	from ..BuilderBot import BuilderBot
-	
+from ..helper_functions import eprint
 from ..Constants import CARDINAL_DIRECTIONS, CONVEYOR_ENTITIES
 from ..Tasktypes import BuilderTask, TaskData
 from cambc import Controller, GameConstants, EntityType
@@ -51,38 +51,28 @@ def reached_ore(self:BuilderBot, ct:Controller, reached_target:bool):
 			return True
 		#there is a harvester on this ore
 		elif b_id:
-			# check no one else has already built a conveyor from this ore
-			for dir in CARDINAL_DIRECTIONS:
-				check_pos = self.target.add(dir)
-				if not self.is_valid_position(check_pos):
-					continue
-				building_id = ct.get_tile_building_id(check_pos)
-				if building_id:
-					etype = ct.get_entity_type(building_id)
-					if  ct.get_team() == ct.get_team(building_id):
-						if etype in CONVEYOR_ENTITIES:
-							self.task_complete(ct)
-							return True
-					
-
-
-			# TODO: build to nearest bridge instead of core - (check if bridge gets congested) - second task to decongest bridges ?
-			all_dir = [self.target.add(d) for d in CARDINAL_DIRECTIONS]
-			all_dir.sort(key=lambda dir: self.chebyshev(self.core_pos, dir))
-			for pos in all_dir:
-				if self.is_valid_position(pos) and self.check_bit(self.walkable_board, pos) and not self.check_bit(self.enemy_buildings_board|self.axionite_ores_board|self.titanium_ores_board, pos):
-					print(f'{pos.x} {pos.y} is walkable - build a bridge here')
-					self.add_task(ct,BuilderTask.BUILD_BRIDGE, pos)
-					break
+			self.task['timeout'] = 15
+			self.invalid_tasks.append(self.task)
 			self.task_complete(ct)
 			return True
-	
+			
 def is_valid(self:BuilderBot,ct:Controller, task:TaskData)->bool:
 	#TODO change to checking if a team conveyor is leading from this harvester
-	return bool(self.check_bit(~self.team_harvesters_board&self.connected_region, task['data']))
+	
+	if self.check_bit(self.connected_region, task['data']):
+		p = task['data']
+		for d in CARDINAL_DIRECTIONS:
+			check_pos = p.add(d)
+			if self.is_valid_position(check_pos):
+				for id in self.conveyor_ids[check_pos]:
+					if self.conveyor_lines[id]['feeds'] ==EntityType.CORE and self.team == self.conveyor_lines[id]['feeds_team']:
+						return False
+					break
+		return True
+	return False
 
 
 phases = [set_target, get_to_ore, reached_ore]
-do_once = False
+do_once = True
 
 

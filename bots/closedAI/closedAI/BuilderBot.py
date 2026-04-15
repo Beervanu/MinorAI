@@ -21,6 +21,8 @@ class BuilderBot(Bot):
 		
 		super().__init__(ct, EntityType.BUILDER_BOT)
 		self.core_pos = core_pos
+		for d in Direction:
+			self.core_mask = self.set_bit(self.core_mask, self.core_pos)
 		self.core_attack_range_mask = 0
 		self.core_attack_range_symmetry_masks = (0,0,0)
 		attack_range = ceil((GameConstants.SENTINEL_VISION_RADIUS_SQ)**0.5)
@@ -73,11 +75,16 @@ class BuilderBot(Bot):
 		if read.date == ct.get_current_round():
 			if self.task:
 				if read.task_type == self.task["type"]and self.task["type"] in DO_ONCE_TASKS and read.task_identifier == self.task["identifier"]:
+					self.task['timeout'] = ct.get_current_round()+25
+					self.invalid_tasks.append(self.task)
 					self.task_complete(ct)
 			# TODO: right now identifier is always a position this is jank
+			# try and not stand on where another bot is trying to do something
 			if read.task_type in DO_ONCE_TASKS:
 				pos_index = read.task_identifier
-				self.clear_bit(self.walkable_board, Position(pos_index % self.map_width, floor(pos_index/self.map_width)))
+				clear_out_pos = Position(pos_index % self.map_width, floor(pos_index/self.map_width))
+				if clear_out_pos != ct.get_position():
+					self.clear_bit(self.walkable_board, clear_out_pos)
 
 	def turn_end(self, ct:Controller):
 		super().turn_end(ct)
@@ -93,18 +100,11 @@ class BuilderBot(Bot):
 				if ct.can_place_marker(check_pos):
 					ct.place_marker(check_pos, write.as_int)
 
-	# Static so it can be alled through the class without needing to pass in self
-	@staticmethod
-	def chebyshev(a: Position, b: Position) -> int:
-		"""
-		Chebyshev distance - admissible heuristic (Never overestimates the true path length) for 8-directional movement.
-		"""
-		return max(abs(a.x - b.x), abs(a.y - b.y))
+	
 	
 	def get_neighbours(self, pos: Position):
 		"""
-		Returns walkable neighbour positions (non-wall, non-ore, in-bounds)
-		Ore is excluded as the bots can not walk on ore.
+		Returns walkable neighbour positions (non-wall, in-bounds)
 		"""
 		neighbour_bit_mask = self.direct_neighbour_mask
 		
@@ -129,10 +129,9 @@ class BuilderBot(Bot):
 			(neighbours, nb) = self.pop_lsb(neighbours)
 			yield nb
 
-	def get_bridge_neighbours(self, pos: Position):
+	def get_bridge_neighbours(self, pos: Position, goal_bitmask:int):
 		"""
-		Returns bridge-buildable neighbour positions (non-wall, non-ore, in-bounds)
-		Ore is excluded as the bots can not walk on ore.
+		Returns bridge-buildable neighbour positions (non-wall, non-ore, in-bounds) (avoid building bridges on ore for now)
 		"""
 		neighbour_bit_mask = self.bridge_neighbour_mask
 
@@ -162,8 +161,8 @@ class BuilderBot(Bot):
 		neighbour_bit_mask<<=index
 		# shift to recenter bitmask on index - order is important, else we might delete part of the mask
 		neighbour_bit_mask >>= self.map_width*3 + 3
-			
-		neighbours = (self.walkable_board|(~self.seen_board)) & neighbour_bit_mask & (~self.enemy_buildings_board) & ~(self.axionite_ores_board | self.titanium_ores_board)
+		neighbours = neighbour_bit_mask & (goal_bitmask | ~(self.team_conveyors_board))
+		neighbours &= (self.walkable_board|(~self.seen_board))  & ~(self.axionite_ores_board | self.titanium_ores_board)
 		neighbours &= self.connected_region
 		while neighbours:
 			(neighbours, nb) = self.pop_lsb(neighbours)
@@ -173,7 +172,8 @@ class BuilderBot(Bot):
 		starttime = ct.get_cpu_time_elapsed()
 		neighbour_function = self.get_neighbours
 		if bridge:
-			neighbour_function = self.get_bridge_neighbours
+			goal_bitmask = self.get_bitmask(goal)
+			neighbour_function = lambda pos: self.get_bridge_neighbours(pos, goal_bitmask)
 		current = None
 		target_radius_sq = 0 if bridge else self.target_radius_sq
 		best_goal_score = float('inf')
@@ -403,8 +403,9 @@ class BuilderBot(Bot):
 			remaining_board = self.clear_bit(remaining_board, path[-1])
 			# don't want to build a bridge over ore
 			mask |= self.titanium_ores_board | self.axionite_ores_board
-			# can't yet build on enemy buildings
-			mask |= self.enemy_buildings_board
+			#don't want to build onto our own conveyors
+			mask |= self.team_conveyors_board
+			#eprint(remaining_board&self.team_conveyors_board, remaining_board&(self.titanium_ores_board | self.axionite_ores_board), remaining_board&(~self.walkable_board & self.seen_board))
 		return (remaining_board & mask)
 
 	def follow_path(self, ct: Controller) -> bool:
@@ -485,13 +486,15 @@ class BuilderBot(Bot):
 			
 		task_time = ct.get_cpu_time_elapsed()
 		keep_processing_tasks = True
+		count = 0
 		while (keep_processing_tasks and not self.pathfinding_interrupted):
+			count+=1
+			if count>20:
+				print('cancelled processing')
+				break
 			current_pos = ct.get_position()
-			if not self.task or self.task['type'] == BuilderTask.CUTOFF_ENEMY_TURRET or ct.get_global_resources()[0]>ct.get_gunner_cost()[0]*1.5:
-				keep_processing_tasks = self.process_tasks(ct)
-			else:
-				print("Task processing paused")
-				keep_processing_tasks = False
+			
+			keep_processing_tasks = self.process_tasks(ct)
 			# if we don't want to pathfind
 			if self.target is None or not self.do_pathfinding:
 				print('No target/pathfinding off')
@@ -524,7 +527,7 @@ class BuilderBot(Bot):
 				print('No path to follow??')
 			print (f'Task took {ct.get_cpu_time_elapsed()-task_time}μs')
 			task_time = ct.get_cpu_time_elapsed()
-			print(f'Current Target: {self.target}')
+			print(f'Current Target: {self.target}, RadiusSq: {self.target_radius_sq}')
 			print(f"Path: {self.path_string(self.path)}")
 		print(f'Bridge Path: {self.path_string(self.bridge_path)}')
 		print(f'Conveyor Path: {self.path_string(self.conveyor_path)}')
@@ -558,7 +561,9 @@ class BuilderBot(Bot):
 					self.end_task()
 				else:
 					print('Task was not interrupted')
-				
+		if self.task['type'] != BuilderTask.CUTOFF_ENEMY_TURRET and ct.get_global_resources()[0]<ct.get_gunner_cost()[0]*1.5:
+			print('Task processing paused: not enough money to defend')
+			return False
 		print(f'Task: {self.task['type']}, Data: {self.task['data']}, P: {self.phase}')
 		current_pos = ct.get_position()
 		reached_target = not self.target is None and current_pos.distance_squared(self.target) <=self.target_radius_sq
@@ -567,9 +572,10 @@ class BuilderBot(Bot):
 
 	def task_complete(self, ct:Controller):
 		self.end_task()
-		if self.task['type'] == BuilderTask.FIND_ORE:
-			self.add_task(ct,BuilderTask.FIND_ORE, None, True)
+		re_add_find_ore = self.task['type'] == BuilderTask.FIND_ORE
 		super().task_complete(ct)
+		self.add_task(ct,BuilderTask.FIND_ORE, None, True)
+
 	
 	def end_task(self):
 		"""Clears all the pathfinding and general shenanigans to prep for a new task - different to task_complete in that it does not edit the task"""
@@ -610,7 +616,7 @@ class BuilderBot(Bot):
 	def bug_path_find(self,ct:Controller, start:Position, goal:Position, goal_radius_sq:int, facing:(Direction|None)=None, closest_distance_sq:float=0):
 		path = [start]
 		if not facing:
-			path += self.straight_path_to_target(ct, start, goal)
+			path += self.straight_path_to_target(ct, start, goal, goal_radius_sq)
 		#follow the obstacle around in clockwise manner until we are closer than before
 		obstacle_board = (~self.walkable_board)&self.seen_board
 		change_direction = False
@@ -665,7 +671,7 @@ class BuilderBot(Bot):
 				if check_dir in CARDINAL_DIRECTIONS:
 					check_dir = check_dir.rotate_right() if self.going_clockwise else check_dir.rotate_left()
 			path+=path_around_obstacle
-			path += self.straight_path_to_target(ct, current_pos, goal)
+			path += self.straight_path_to_target(ct, current_pos, goal, goal_radius_sq)
 		return path[1:]
 
 
@@ -673,7 +679,7 @@ class BuilderBot(Bot):
 	#returns (path, destination)
 	#where path: Direction[] and destination: Position
 	#returns the path to the furthest we can get in the direction of end goal in the naive approach
-	def straight_path_to_target(self,ct:Controller, start:Position, end:Position):
+	def straight_path_to_target(self,ct:Controller, start:Position, end:Position, end_radius_sq:int):
 		path_dir = Position(end.x-start.x, end.y-start.y)
 		steps = max(abs(path_dir.x), abs(path_dir.y))
 		num_diag = min(abs(path_dir.x), abs(path_dir.y))
@@ -686,6 +692,8 @@ class BuilderBot(Bot):
 		current_pos = start
 		path = []
 		for i in range(steps):
+			if current_pos.distance_squared(end) < end_radius_sq:
+				return path
 			# try and go diagonal first
 			if num_diag:
 				check_pos = current_pos.add(diag_direction)
