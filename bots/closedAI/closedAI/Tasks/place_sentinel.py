@@ -106,6 +106,10 @@ def is_valid(self:BuilderBot,ct:Controller, task:TaskData)->bool:
 			if self.conveyor_lines[id]['harvesters']:
 				return True
 			break
+	for d in CARDINAL_DIRECTIONS:
+		check_pos = task['data'].add(d)
+		if self.is_valid_position(check_pos) and self.check_bit(self.harvesters_board, check_pos):
+			return True
 	return False
 
 phases = [set_target, attack, place_sentinel]
