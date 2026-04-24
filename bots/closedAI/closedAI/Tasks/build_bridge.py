@@ -121,7 +121,8 @@ def choose_bridge_type(self:BuilderBot, ct:Controller, reached_target:bool):
 					case -1:
 						y_dir = Direction.NORTH
 			#if we are going diagonal, skip building conveyors and just use a bridge
-			
+			buildable_board = self.walkable_board & ~(self.axionite_ores_board|self.titanium_ores_board|self.team_conveyors_board) 
+			buildable_board |= self.get_bitmask(next_bridge_point)
 			current_pos = self.target
 			self.conveyor_path = [self.target]
 			for i in range(self.chebyshev(next_bridge_point, self.target)):
@@ -136,7 +137,7 @@ def choose_bridge_type(self:BuilderBot, ct:Controller, reached_target:bool):
 					if not self.is_valid_position(check_pos):
 						continue
 
-					if self.check_bit(self.walkable_board & ~(self.axionite_ores_board|self.titanium_ores_board|self.team_conveyors_board), check_pos):
+					if self.check_bit(buildable_board, check_pos):
 						self.conveyor_path.append(check_pos)
 						current_pos = check_pos
 						#if we are able to build a full conveyor to the next point
@@ -167,7 +168,7 @@ def choose_bridge_type(self:BuilderBot, ct:Controller, reached_target:bool):
 def build_conveyors(self:BuilderBot, ct:Controller, reached_target:bool):
 	# eprint('conv')
 	current_pos = ct.get_position()
-	if coll:=self.check_path_collisions(self.conveyor_path, 0, True):
+	if self.check_path_collisions(self.conveyor_path, 0, True):
 		# we should be standing on a conveyor so destroy it and try building a bridge from here
 		if ct.can_destroy(current_pos):
 			ct.destroy(current_pos)

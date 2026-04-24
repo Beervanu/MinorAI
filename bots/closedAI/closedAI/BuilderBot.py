@@ -13,7 +13,7 @@ class BuilderBot(Bot):
 		
 		#must generate before calling super()
 		#most to least priority
-		priority_list = [BuilderTask.ATTACK_ENEMY_CORE, BuilderTask.CUTOFF_ENEMY_TURRET, BuilderTask.FOUND_CORE, BuilderTask.FIND_ENEMY_CORE,BuilderTask.BUILD_BRIDGE, BuilderTask.PLACE_SENTINEL, BuilderTask.FOUND_AX_ORE, BuilderTask.FOUND_TI_ORE, BuilderTask.FIND_ORE]
+		priority_list = [BuilderTask.ATTACK_ENEMY_CORE, BuilderTask.CUTOFF_ENEMY_TURRET, BuilderTask.HEAL, BuilderTask.FOUND_CORE, BuilderTask.FIND_ENEMY_CORE,BuilderTask.BUILD_BRIDGE, BuilderTask.PLACE_SENTINEL, BuilderTask.FOUND_AX_ORE, BuilderTask.FOUND_TI_ORE, BuilderTask.FIND_ORE]
 		#generate lookup table for task priorities
 		self.task_priority = {}
 		for i in range(len(priority_list)):
@@ -245,6 +245,9 @@ class BuilderBot(Bot):
 					extra_cost = 0
 					if not bridge and not self.check_bit(self.team_buildings_board| self.enemy_buildings_board, neighbour):
 						extra_cost += 0.5
+					elif self.check_bit(self.enemy_buildings_board, neighbour):
+						# add a cost if we need to build over enemy buildings
+						extra_cost +=1
 					# if self.check_bit(self.units_adjacent_board, neighbour):
 					# 	extra_cost+=1
 					tentative_g = g_score[current] + 1 +extra_cost
@@ -561,7 +564,7 @@ class BuilderBot(Bot):
 					self.end_task()
 				else:
 					print('Task was not interrupted')
-		if self.task['type'] != BuilderTask.CUTOFF_ENEMY_TURRET and ct.get_global_resources()[0]<ct.get_gunner_cost()[0]*1.5:
+		if self.task['type'] not in ESSENTIAL_TASKS and ct.get_global_resources()[0]<ct.get_gunner_cost()[0]*1.5:
 			print('Task processing paused: not enough money to defend')
 			return False
 		print(f'Task: {self.task['type']}, Data: {self.task['data']}, P: {self.phase}')

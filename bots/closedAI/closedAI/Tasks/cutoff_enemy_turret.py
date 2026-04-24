@@ -34,7 +34,12 @@ def set_target(self: BuilderBot, ct:Controller, reached_target: bool):
 	
 	if conveyor_positions:=self.conveyors_pointing_into[turret_pos]:
 		for pos in conveyor_positions:
-			self.change_target(pos)
+			if self.check_bit(self.team_buildings_board, pos):
+				#we can destroy it from a block away bc it is a team conveyor
+				self.change_target(pos)
+			else:
+				# we need to attack it as it is a enemy conveyor
+				self.change_target(pos, 0)
 			self.phase=1
 			return True
 	#successfully cutoff

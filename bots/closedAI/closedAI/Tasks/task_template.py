@@ -13,7 +13,7 @@ def first_phase(self: BuilderBot, ct:Controller, reached_target: bool):
 	pass
 
 #is called before we switch to this task, and can be used to cull the task if it ever becomes invalid
-def is_valid(self: BuilderBot, task:TaskData)->bool:
+def is_valid(self: BuilderBot,ct:Controller, task:TaskData)->bool:
 	return True
 
 phases = [first_phase]

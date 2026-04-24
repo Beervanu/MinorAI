@@ -650,7 +650,14 @@ class Bot:
 						self.read_marker(ct, building_id)
 				else:
 					if is_team:
+						
 						self.team_buildings_board|= pos_bitmask
+						#order of this is VERY important - team buildings board must be updated before we add heal task
+						#heal damaged stuff
+						if is_builder_bot and etype not in [EntityType.ROAD, EntityType.MARKER] :
+							
+							if ct.get_hp(building_id) <= ct.get_max_hp(building_id)-4:
+								self.add_task(ct, BuilderTask.HEAL, pos, True)
 						if etype == EntityType.HARVESTER:
 							self.team_harvesters_board |= pos_bitmask
 						elif etype in CONVEYOR_ENTITIES:
@@ -659,7 +666,7 @@ class Bot:
 						self.enemy_buildings_board|= pos_bitmask
 						if etype in CONVEYOR_ENTITIES:
 							if self.ore_adjacent_board&pos_bitmask and is_builder_bot:
-								self.add_task(ct,BuilderTask.PLACE_SENTINEL, pos)
+								self.add_task(ct,BuilderTask.PLACE_SENTINEL, pos, True)
 							self.enemy_conveyor_board |= pos_bitmask
 						elif etype in TURRET_ENTITIES:
 							self.add_task(ct,BuilderTask.CUTOFF_ENEMY_TURRET, pos)
