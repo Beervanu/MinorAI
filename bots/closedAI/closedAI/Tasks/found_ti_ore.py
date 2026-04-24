@@ -33,7 +33,7 @@ def reached_ore(self:BuilderBot, ct:Controller, reached_target:bool):
 	if ct.get_action_cooldown() == 0:
 		b_id = ct.get_tile_building_id(self.target)
 		# if there is a road on top of it
-		if b_id and ct.get_entity_type(b_id) in [EntityType.ROAD, EntityType.MARKER]:
+		if b_id and ct.get_entity_type(b_id) in [EntityType.ROAD, EntityType.MARKER, EntityType.BARRIER]:
 			#if we are near enough try to destroy it (only works if it is our road)
 			if ct.can_destroy(self.target):
 				ct.destroy(self.target)
