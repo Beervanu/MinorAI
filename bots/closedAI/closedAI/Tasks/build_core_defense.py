@@ -5,7 +5,8 @@ if TYPE_CHECKING:
 	from ..DefenderBot import DefenderBot
 
 from ..Tasktypes import BuilderTask, TaskData
-from cambc import Controller, Position
+from cambc import Controller, Position, Direction
+from ..Constants import DIRECTIONS
 
 task_type = BuilderTask.BUILD_CORE_DEFENCE
 
@@ -69,10 +70,6 @@ def compute_defence_conveyors_board(self: DefenderBot) -> int:
 def next_unbuilt_defence_tile(self: DefenderBot, ct: Controller, template_board: int) -> Position | None:
 	"""Returns the closest template tile not yet occupied by any building."""
 	unbuilt = template_board & (self.walkable_board | ~self.seen_board)
-	print(f"Unbuilt: {self.board_string(unbuilt)}")
-	print(f"Walkable: {self.board_string(self.walkable_board)}")
-	print(f"Seen: {self.board_string(self.seen_board)}")
-	print(f"Template: {self.board_string(template_board)}")
 	if unbuilt == 0:
 		return None
 
@@ -115,22 +112,58 @@ def pick_wall_target(self: DefenderBot, ct: Controller, reached_target: bool):
 
 
 def build_wall(self: DefenderBot, ct: Controller, reached_target: bool):
+	if ct.is_in_vision(self.target):
+		if not self.check_bit(self.walkable_board, self.target):
+			self.phase-=1
+			return True
+			
 	if reached_target:
+		target_bitmask = self.get_bitmask(self.target)
 		if ct.get_action_cooldown() == 0: 
-			if self.check_bit(self.walkable_board, self.target):
+			self_pos = ct.get_position()
+			if self.walkable_board&target_bitmask:
 				if ct.can_destroy(self.target):
 					ct.destroy(self.target)
-				if self.check_bit(self.enemy_buildings_board, self.target):
-					
-					
+				#if there is a walkable enemy building
+				if self.enemy_buildings_board&target_bitmask:
+					print('trying to attack')
+					# if we're not on top of the target then move on top
+					if self.target!= self_pos:
+						if ct.get_move_cooldown() ==0:
+							move_dir = self_pos.direction_to(self.target)
+							if ct.can_move(move_dir):
+								ct.move(move_dir)
+					if ct.can_fire(self.target):
+						ct.fire(self.target)
+					return False
+			
+			if self.target == self_pos:
+				best_dist = float('inf')
+				best_dir = Direction.CENTRE
+				for d in DIRECTIONS:
+					check_pos = self_pos.add(d)
+					if self.is_valid_position(check_pos) and self.check_bit(self.walkable_board, check_pos):
+						dist = self.chebyshev(self.core_pos, check_pos)
+						if dist<best_dist:
+							best_dir = d
+							best_dist = dist
+				
+
+
+				if ct.can_move(best_dir):
+					ct.move(best_dir)
+				else:
+					#this is bad idk
+					return False
+
 			if ct.can_build_barrier(self.target):
+				
 				ct.build_barrier(self.target)
 				# Loop back to pick the next wall
 				self.phase -= 1
 				return False
 		return False
-
-
+			
 def pick_conveyor_target(self: DefenderBot, ct: Controller, reached_target: bool):
 	target_pos = next_unbuilt_defence_tile(self, ct, self.defence_conveyors_board)
 
