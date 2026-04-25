@@ -79,19 +79,7 @@ class BuilderBot(Bot):
 				if clear_out_pos != ct.get_position():
 					self.clear_bit(self.walkable_board, clear_out_pos)
 
-	def turn_end(self, ct:Controller):
-		super().turn_end(ct)
-		write = TaskMarkerData()
-		write.type = 1
-		write.date = ct.get_current_round()
-		write.task_type = self.task['type']
-		write.task_identifier = self.task['identifier']
-		current_pos = ct.get_position()
-		for x in range(-1,2):
-			for y in range(-1,2):
-				check_pos = Position(current_pos.x+x, current_pos.y+y)
-				if ct.can_place_marker(check_pos):
-					ct.place_marker(check_pos, write.as_int)
+	
 
 	
 	

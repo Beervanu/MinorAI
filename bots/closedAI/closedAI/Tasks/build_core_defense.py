@@ -5,8 +5,10 @@ if TYPE_CHECKING:
 	from ..DefenderBot import DefenderBot
 
 from ..Tasktypes import BuilderTask, TaskData
-from cambc import Controller, Position, Direction
+from ..Markers import LauncherMarkerData
+from cambc import Controller, Position, Direction, EntityType
 from ..Constants import DIRECTIONS, CARDINAL_DIRECTIONS
+from ..helper_functions import eprint
 
 task_type = BuilderTask.BUILD_CORE_DEFENCE
 
@@ -47,7 +49,7 @@ def next_unbuilt_defence_tile(self: DefenderBot, ct: Controller, template_board:
 	temp = unbuilt
 	while temp:
 		(temp, pos) = self.pop_lsb(temp)
-		dist = self.chebyshev(current, pos)
+		dist = abs(current.x-pos.x)+abs(current.y-pos.y)
 		if dist < best_dist:
 			best_dist = dist
 			best = pos
@@ -98,7 +100,6 @@ def build_wall(self: DefenderBot, ct: Controller, reached_target: bool):
 					ct.destroy(self.target)
 				#if there is a walkable enemy building
 				if self.enemy_buildings_board&target_bitmask:
-					print('trying to attack')
 					# if we're not on top of the target then move on top
 					if self.target!= self_pos:
 						if ct.get_move_cooldown() ==0:
@@ -119,13 +120,15 @@ def build_wall(self: DefenderBot, ct: Controller, reached_target: bool):
 						if dist<best_dist:
 							best_dir = d
 							best_dist = dist
-				
-
+				b_pos = self_pos.add(best_dir)
+				if ct.can_build_road(b_pos):
+					ct.build_road(b_pos)
 
 				if ct.can_move(best_dir):
 					ct.move(best_dir)
 				else:
 					#this is bad idk
+					eprint('uh oh')
 					return False
 
 			if ct.can_build_barrier(self.target):
@@ -136,19 +139,21 @@ def build_wall(self: DefenderBot, ct: Controller, reached_target: bool):
 
 				# Tiles that were reachable but now aren't - excluding the target itself
 				lost_tiles = current_region & ~simulated_region & ~target_bitmask
-
-				if lost_tiles != 0:
-					return convert_to_launcher_pocket(self, ct)
+				
+				if lost_tiles != 0 or self.task['data']>=12:
+					convert_to_launcher_pocket(self, ct)
+					return True	
 				
 				if ct.can_build_barrier(self.target):
+					#task data is a wall counter
+					self.task['data']+=1
 					ct.build_barrier(self.target)
 					self.phase = phases.index(pick_wall_target)
 					return False
 		return False
 
-def snap_to_cardinal(d: Direction) -> Direction:
+def snap_to_cardinal(dx, dy) -> Direction:
     """Snap a diagonal direction to the nearest cardinal."""
-    dx, dy = d.delta()
     if abs(dx) > abs(dy):
         return Direction.EAST if dx > 0 else Direction.WEST
     else:
@@ -159,12 +164,16 @@ def convert_to_launcher_pocket(self: DefenderBot, ct: Controller):
 	Marks a laucher pocket and queues the launcher build at this position.
 	"""
 	# Direction from the gap toward the core (snapped to cardinal so the bots can still get back even if the gap is diagonal (corner))
-	inward_raw = self.target.direction_to(self.core_pos)
-	inward = snap_to_cardinal(inward_raw)
+	inward = snap_to_cardinal(self.core_pos.x-self.target.x, self.core_pos.y-self.target.y)
 	launcher_pos = self.target.add(inward)
-
-	# Reserve the gap, the launcher tile, and the two flanking tiles
 	self.defence_walls_board = self.clear_bit(self.defence_walls_board, self.target)
+	if not self.check_bit(self.walkable_board, launcher_pos):
+		launcher_pos = self.target.add(inward.opposite())
+		if not self.check_bit(self.walkable_board, launcher_pos):
+			return False
+			
+	# Reserve the gap, the launcher tile, and the two flanking tiles
+	
 	self.launcher_pocket_board = self.set_bit(self.launcher_pocket_board, self.target)
 	self.launcher_pocket_board = self.set_bit(self.launcher_pocket_board, launcher_pos)
 
@@ -182,26 +191,67 @@ def convert_to_launcher_pocket(self: DefenderBot, ct: Controller):
 
 def build_launcher(self: DefenderBot, ct: Controller, reached_target: bool):
 	if reached_target:
+		target_bitmask = self.get_bitmask(self.target)
 		if ct.get_action_cooldown() == 0:
-			# Move ut of the way if standing on the launcher tile
+			
 			self_pos = ct.get_position()
-			if self_pos == self.target:
+			if self.walkable_board&target_bitmask:
+				if ct.can_destroy(self.target):
+					ct.destroy(self.target)
+				#if there is a walkable enemy building
+				if self.enemy_buildings_board&target_bitmask:
+					# if we're not on top of the target then move on top
+					if self.target!= self_pos:
+						if ct.get_move_cooldown() ==0:
+							move_dir = self_pos.direction_to(self.target)
+							if ct.can_move(move_dir):
+								ct.move(move_dir)
+					if ct.can_fire(self.target):
+						ct.fire(self.target)
+					return False
+				
+			
+			if ct.get_global_resources()[0] >= ct.get_launcher_cost()[0]:
+				if self_pos == self.target:
+					for d in DIRECTIONS:
+						check_pos = self_pos.add(d)
+						if self.is_valid_position(check_pos) and self.check_bit(self.walkable_board, check_pos):
+
+							if ct.can_move(d):
+								ct.move(d)
+								break
+
+
+			if ct.can_build_launcher(self.target):
+				self_pos = ct.get_position()
+					# Move ut of the way if standing on the launcher tile
+				
 				for d in DIRECTIONS:
 					check_pos = self_pos.add(d)
-					if self.is_valid_position(check_pos) and self.check_bit(self.walkable_board, check_pos):
-						if ct.can_move(d):
-							ct.move(d)
+					if self.is_valid_position(check_pos) and check_pos != self.target:
+						if self.check_bit(self.team_buildings_board, check_pos):
+							if b_id:=ct.get_tile_building_id(check_pos):
+								if ct.get_entity_type(b_id) in [EntityType.ROAD, EntityType.MARKER]:
+									if ct.can_destroy(check_pos):
+										ct.destroy(check_pos)
+
+						if ct.can_place_marker(check_pos):
+							write = LauncherMarkerData()
+							write.date = ct.get_current_round()
+							write.core_x = self.core_pos.x
+							write.core_y = self.core_pos.y
+							ct.place_marker(check_pos, write.as_int)
 							break
-				return False
-			
-			if ct.can_build_launcher(self.target):
 				ct.build_launcher(self.target)
+				self.task['data'] = 0
 				# Back to wall-building loop
 				self.phase = phases.index(pick_wall_target)
 				return True
 			
 	return False
-			
+
+
+
 def is_valid(self: DefenderBot, ct: Controller, task: TaskData) -> bool:
 	return True
 
