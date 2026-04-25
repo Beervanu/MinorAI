@@ -53,14 +53,7 @@ def generate_path(self: BuilderBot, ct:Controller, reached_target: bool):
 			capacity_board|=self.conveyor_lines[i]['bitboard']
 	capacity_board|=self.core_mask
 
-	region_bitboard = self.set_bit(0, bridge_start)
-	while not region_bitboard&capacity_board:
-		region_bitboard |= (region_bitboard<<1)&self.inverted_left_mask
-		region_bitboard |= (region_bitboard>>1)&self.inverted_right_mask
-		region_bitboard |= (region_bitboard>>self.map_width)
-		region_bitboard |= (region_bitboard<<self.map_width)
-	
-	(_, goal) = self.pop_lsb(region_bitboard&capacity_board)
+	goal = self.closest_in_board(capacity_board, bridge_start)
 	self.compute_bridge_path(ct, bridge_start, goal)
 	#if there is no path from this start we just abandon this harvester
 	if not self.bridge_path:

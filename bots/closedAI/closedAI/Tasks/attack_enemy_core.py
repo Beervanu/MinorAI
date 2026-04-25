@@ -18,7 +18,7 @@ def set_target(self: BuilderBot, ct:Controller, reached_target: bool):
 def find_bridges(self: BuilderBot, ct:Controller, reached_target: bool):
 	if reached_target:
 		attack_mask = self.core_attack_range_symmetry_masks[self.map_symmetry-1]
-		in_range_bridges = self.enemy_conveyor_board&attack_mask
+		in_range_bridges = self.enemy_conveyors_board&attack_mask
 		while (in_range_bridges):
 			in_range_bridges, pos = self.pop_lsb(in_range_bridges)
 			if not ct.is_in_vision(pos):

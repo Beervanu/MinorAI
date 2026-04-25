@@ -1,4 +1,4 @@
-from cambc import Direction
+from cambc import Direction,Position
 import sys
 def closest_diagonal(x_dir:Direction, y_dir:Direction):
 	map = {

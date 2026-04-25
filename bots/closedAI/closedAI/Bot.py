@@ -25,7 +25,7 @@ class Bot:
 		self.core_mask = 0
 		self.enemy_core_mask = 0
 		self.team = ct.get_team()
-		# Cache map dimensions gloabally for this unit
+		# Cache map dimensions globally for this unit
 		self.map_width = ct.get_map_width()
 		self.map_height = ct.get_map_height()
 		self.task: TaskData = None
@@ -49,7 +49,7 @@ class Bot:
 		self.seen_this_round_board = 0
 		self.team_harvesters_board = 0
 		self.harvesters_board = 0
-		self.enemy_conveyor_board = 0
+		self.enemy_conveyors_board = 0
 		self.team_conveyors_board = 0
 
 		self.conveyor_id = 0
@@ -112,6 +112,15 @@ class Bot:
 		for pos in path:
 			s+=f'({pos.x}, {pos.y}) '
 		return s
+
+	def closest_in_board(self, board:int, pos:Position):
+		check_board = self.get_bitmask(pos)
+		while not check_board&board:
+			check_board |= (check_board<<1)&self.inverted_left_mask
+			check_board |= (check_board>>1)&self.inverted_right_mask
+			check_board |= (check_board>>self.map_width)
+			check_board |= (check_board<<self.map_width)
+		return self.pop_lsb(check_board&board)[1]
 
 	def generate_mask(self, arr: list[int])->int:
 		mask = 0
@@ -569,6 +578,7 @@ class Bot:
 			self.seen_board,self.seen_symmetry_boards = self.set_symmetry_bit(self.seen_board,self.seen_symmetry_boards, pos)
 		print(f'Updating environment took {ct.get_cpu_time_elapsed()}μs')
 		harvester_positions:list[Position] = []
+		conveyors_added = False
 		#then update buildings
 		for pos in ct.get_nearby_tiles():
 			pos_bitmask = self.get_bitmask(pos)
@@ -593,7 +603,7 @@ class Bot:
 			self.team_buildings_board &= inverted_pos_bitmask
 			self.enemy_buildings_board&= inverted_pos_bitmask
 			self.team_harvesters_board &= inverted_pos_bitmask
-			self.enemy_conveyor_board&= inverted_pos_bitmask
+			self.enemy_conveyors_board&= inverted_pos_bitmask
 			self.team_conveyors_board &= inverted_pos_bitmask
 			old_harvesters = self.harvesters_board
 			self.harvesters_board&= inverted_pos_bitmask
@@ -625,6 +635,7 @@ class Bot:
 						self.conveyor_broken(ct, pos)
 
 					if not self.conveyor_ids[pos]:
+						conveyors_added=True
 						self.add_conveyor(pos, points_to)
 
 				#if there used to be a conveyor but it has been broken now
@@ -667,7 +678,7 @@ class Bot:
 						if etype in CONVEYOR_ENTITIES:
 							if self.ore_adjacent_board&pos_bitmask and is_builder_bot:
 								self.add_task(ct,BuilderTask.PLACE_SENTINEL, pos, True)
-							self.enemy_conveyor_board |= pos_bitmask
+							self.enemy_conveyors_board |= pos_bitmask
 						elif etype in TURRET_ENTITIES:
 							self.add_task(ct,BuilderTask.CUTOFF_ENEMY_TURRET, pos)
 			elif self.conveyor_ids[pos]:
@@ -691,8 +702,26 @@ class Bot:
 				if self.check_bit(self.walkable_board, pos) and not self.check_bit(self.axionite_ores_board|self.titanium_ores_board, pos):
 					self.add_task(ct,BuilderTask.BUILD_BRIDGE, (pos))
 					break
-
 		print(f'Updating buildings took {ct.get_cpu_time_elapsed()}μs')
+		# we want to cutoff enemy lines that feed enemy buildings
+		if conveyors_added and is_builder_bot:
+			found_ids:set[int] = set()
+			for id in self.conveyor_lines:
+				if id in found_ids:
+					continue
+				found_ids.add(id)
+				conveyor_info = self.conveyor_lines[id]
+				if conveyor_info['feeds_team'] != self.team and conveyor_info['harvesters']:
+					#get ids of last position, then cutoff all of those lines simultaneously
+					cutoff_line_ids = self.conveyor_ids[conveyor_info['positions'][-1]]
+					found_ids.update(cutoff_line_ids)
+					bitb = conveyor_info['bitboard']
+					for _id in cutoff_line_ids:
+						bitb&= self.conveyor_lines[_id]['bitboard']
+					self.add_task(ct, BuilderTask.CUTOFF_ENEMY_LINES, self.closest_in_board(bitb, ct.get_position()), True)
+
+
+		print(f'Calculating enemy line cutoff points took {ct.get_cpu_time_elapsed()}μs')
 		if old_walkable_board!=self.walkable_board:
 			self.connected_region = self.update_region(self.walkable_board|(self.max_int-self.seen_board),current_pos)
 			print(f'Updating connected region took {ct.get_cpu_time_elapsed()}μs')
