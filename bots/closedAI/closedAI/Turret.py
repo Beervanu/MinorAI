@@ -4,7 +4,6 @@ class Turret(Bot):
 	def __init__(self, ct: Controller, entity_type:EntityType):
 		super().__init__(ct, entity_type)
 		self.attack_mask = 0
-		self.facing = ct.get_direction()
 		self.position = ct.get_position()
 		self.recalculate_attack_mask(ct)
 		self.team = ct.get_team()

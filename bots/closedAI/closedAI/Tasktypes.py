@@ -13,6 +13,7 @@ class BuilderTask(IntEnum):
 	CUTOFF_ENEMY_TURRET = 8
 	HEAL = 9
 	CUTOFF_ENEMY_LINES=10
+	BUILD_CORE_DEFENCE = 11
 
 
 type Task = BuilderTask 

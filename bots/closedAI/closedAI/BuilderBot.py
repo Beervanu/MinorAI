@@ -10,14 +10,7 @@ from .helper_functions import *
 class BuilderBot(Bot):
 	def __init__(self, ct:Controller, core_pos: Position, move_dir: Direction):
 		# Initialises the parent class (Bot) to generate the bit boards and inherit the corresponding variables and functions
-		
-		#must generate before calling super()
-		#most to least priority
-		priority_list = [BuilderTask.ATTACK_ENEMY_CORE, BuilderTask.CUTOFF_ENEMY_TURRET, BuilderTask.HEAL,BuilderTask.CUTOFF_ENEMY_LINES, BuilderTask.FOUND_CORE, BuilderTask.FIND_ENEMY_CORE,BuilderTask.BUILD_BRIDGE, BuilderTask.PLACE_SENTINEL, BuilderTask.FOUND_AX_ORE, BuilderTask.FOUND_TI_ORE, BuilderTask.FIND_ORE]
-		#generate lookup table for task priorities
-		self.task_priority = {}
-		for i in range(len(priority_list)):
-			self.task_priority[priority_list[i]] = i
+	
 		
 		super().__init__(ct, EntityType.BUILDER_BOT)
 		self.core_pos = core_pos
@@ -86,19 +79,7 @@ class BuilderBot(Bot):
 				if clear_out_pos != ct.get_position():
 					self.clear_bit(self.walkable_board, clear_out_pos)
 
-	def turn_end(self, ct:Controller):
-		super().turn_end(ct)
-		write = TaskMarkerData()
-		write.type = 1
-		write.date = ct.get_current_round()
-		write.task_type = self.task['type']
-		write.task_identifier = self.task['identifier']
-		current_pos = ct.get_position()
-		for x in range(-1,2):
-			for y in range(-1,2):
-				check_pos = Position(current_pos.x+x, current_pos.y+y)
-				if ct.can_place_marker(check_pos):
-					ct.place_marker(check_pos, write.as_int)
+	
 
 	
 	

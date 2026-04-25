@@ -5,6 +5,7 @@ from .helper_functions import eprint
 class SentinelBot(Turret):
 	def __init__(self, ct: Controller):
 		super().__init__(ct, EntityType.SENTINEL)
+		self.facing = ct.get_direction()
 
 	def turn_start(self, ct:Controller):
 		super().turn_start(ct)

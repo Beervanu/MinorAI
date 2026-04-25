@@ -3,6 +3,7 @@ from cambc import Controller, EntityType, Direction,Position
 class GunnerBot(Turret):
 	def __init__(self, ct: Controller):
 		super().__init__(ct, EntityType.GUNNER)
+		self.facing = ct.get_direction()
 
 	def turn_start(self, ct:Controller):
 		attack_pos = ct.get_gunner_target()

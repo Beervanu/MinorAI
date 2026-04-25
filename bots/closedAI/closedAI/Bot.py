@@ -896,9 +896,9 @@ class Bot:
 	def read_marker(self, ct:Controller, marker):
 		read = MarkerData()
 		read.as_int =ct.get_marker_value(marker)
-		if read.type == 0:	
+		if read.type == MarkerType.CENTRAL:	
 			self.read_central_marker(ct, marker)
-		elif read.type == 1:
+		elif read.type == MarkerType.TASK:
 			self.read_task_marker(ct, marker)
 
 	def read_central_marker(self, ct: Controller, marker):

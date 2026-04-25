@@ -1,8 +1,10 @@
 from cambc import Controller, Direction, EntityType, Environment, Position, GameConstants
-from closedAI.BuilderBot import BuilderBot
+from closedAI.Launcher import LauncherBot
 from closedAI.Bot import Bot
-from closedAI.Core import Core
 from closedAI.BuilderBot import BuilderBot
+from closedAI.DefenderBot import DefenderBot
+from closedAI.ExplorerBot import ExplorerBot
+from closedAI.Core import Core
 from closedAI.Sentinel import SentinelBot
 from closedAI.Gunner import GunnerBot
 
@@ -25,17 +27,20 @@ class Player:
 						core_pos = ct.get_position(uID)
 						move_dir = ct.get_position().direction_to(core_pos).opposite()
 						break
-				self.bot = BuilderBot(ct, core_pos, move_dir)
+				
+				# First bot of the game becomes the defender, the rest are explorers
+				if ct.get_current_round() == 1:
+					self.bot = DefenderBot(ct, core_pos, move_dir)
+				else:
+					self.bot = ExplorerBot(ct, core_pos, move_dir)
 			elif etype == EntityType.SENTINEL:
 				self.bot = SentinelBot(ct)
-			elif etype==EntityType.GUNNER:
+			elif etype == EntityType.GUNNER:
 				self.bot = GunnerBot(ct)
+			elif etype == EntityType.LAUNCHER:
+				self.bot = LauncherBot(ct)
 			
 			self.first_turn = False
         
 		self.bot.turn_start(ct)
 		self.bot.turn_end(ct)
-
-
-
-
