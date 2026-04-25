@@ -34,39 +34,6 @@ def compute_defence_walls_board(self: DefenderBot) -> int:
 			board = self.set_bit(board, pos)
 	return board
 
-
-def compute_defence_conveyors_board(self: DefenderBot) -> int:
-	"""
-	Builds a bitboard of conveyor positions — four radial lanes from core
-	to the inside of the wall ring. Skips tiles off-map or blocked by environmental walls.
-	"""
-	board = 0
-	cx, cy = self.core_pos.x, self.core_pos.y
-	wall_radius = 4
-	core_half = 1 # core is 3x3, so occupies radius 1 from center
-	lane_half_width = 1 # 2-wide lanes, so half-width is 1
-
-	# Lane offsets along each cardinal direction.
-	# Skip tiles inside the core itself (distance <= core_half) and outside the walls (distance >= wall_radius).
-	for step in range(core_half + 1, wall_radius):
-		# North and south lanes (varying dy, dx within lane width)
-		for offset in range(-lane_half_width, lane_half_width + 1):
-			for dy in (step, -step): # north and south
-				nx, ny = cx + offset, cy + dy
-				if 0 <= nx < self.map_width and 0 <= ny < self.map_height:
-					pos = Position(nx, ny)
-					if not self.check_bit(self.walls_board, pos):
-						board = self.set_bit(board, pos)
-
-			for dx in (step, -step): # east and west
-				nx, ny = cx + dx, cy + offset
-				if 0 <= nx < self.map_width and 0 <= ny < self.map_height:
-					pos = Position(nx, ny)
-					if not self.check_bit(self.walls_board, pos):
-						board = self.set_bit(board, pos)
-	return board
-
-
 def next_unbuilt_defence_tile(self: DefenderBot, ct: Controller, template_board: int) -> Position | None:
 	"""Returns the closest template tile not yet occupied by any building."""
 	unbuilt = template_board & (self.walkable_board | ~self.seen_board)
@@ -91,9 +58,7 @@ def init_templates(self: DefenderBot, ct: Controller, reached_target: bool):
 	"""Compute and cache the wall and conveyor bitboards on first run."""
 	if not self.defence_walls_board:
 		self.defence_walls_board = compute_defence_walls_board(self)
-	if not self.defence_conveyors_board:
-		self.defence_conveyors_board = compute_defence_conveyors_board(self)
-	self.phase += 1
+	self.phase = phases.index(pick_wall_target)
 	return True
 
 
@@ -102,21 +67,28 @@ def pick_wall_target(self: DefenderBot, ct: Controller, reached_target: bool):
 	target_pos = next_unbuilt_defence_tile(self, ct, self.defence_walls_board)
 
 	if target_pos is None:
-		# All walls built — advance to conveyor phase
-		self.phase += 1
+		# All walls built and launchers handled - task complete
+		self.task_complete(ct)
 		return True
 
 	self.change_target(target_pos, 2)
-	self.phase += 1
+	self.phase = phases.index(build_wall) # type: ignore
 	return True
 
 
 def build_wall(self: DefenderBot, ct: Controller, reached_target: bool):
 	if ct.is_in_vision(self.target):
 		if not self.check_bit(self.walkable_board, self.target):
-			self.phase-=1
+			self.phase = phases.index(pick_wall_target)
 			return True
-			
+	
+	# skip if this position is reserved for the launcher pocket
+	if self.check_bit(self.launcher_pocket_board, self.target):
+		# This tile must remain empty - move to next wall
+		self.defence_walls_board = self.clear_bit(self.defence_walls_board, self.target)
+		self.phase = phases.index(pick_wall_target)
+		return True
+	
 	if reached_target:
 		target_bitmask = self.get_bitmask(self.target)
 		if ct.get_action_cooldown() == 0: 
@@ -162,75 +134,82 @@ def build_wall(self: DefenderBot, ct: Controller, reached_target: bool):
 				simulated_walkable = self.walkable_board & ~target_bitmask
 				simulated_region = self.update_region(simulated_walkable, self_pos)
 
-				if simulated_region != current_region:
-					# Placing this wall would cut off part of the region
-					# Swap this wall for a launcher gap instead
-					convert_to_launcher_gap(self, ct)
-					self.phase -= 1
-					return False
+				# Tiles that were reachable but now aren't - excluding the target itself
+				lost_tiles = current_region & ~simulated_region & ~target_bitmask
+
+				if lost_tiles != 0:
+					return convert_to_launcher_pocket(self, ct)
 				
-				ct.build_barrier(self.target)
-				# Loop back to pick the next wall
-				self.phase -= 1
-				return False
+				if ct.can_build_barrier(self.target):
+					ct.build_barrier(self.target)
+					self.phase = phases.index(pick_wall_target)
+					return False
 		return False
 
-def convert_to_launcher_gap(self: DefenderBot, ct: Controller):
+def snap_to_cardinal(d: Direction) -> Direction:
+    """Snap a diagonal direction to the nearest cardinal."""
+    dx, dy = d.delta()
+    if abs(dx) > abs(dy):
+        return Direction.EAST if dx > 0 else Direction.WEST
+    else:
+        return Direction.SOUTH if dy > 0 else Direction.NORTH
+
+def convert_to_launcher_pocket(self: DefenderBot, ct: Controller):
 	"""
-	Find the nearest trio of adjacent walls, destroy them, and build a launcher in the middle. 
-	"""		
-	current = ct.get_position()
-	# Find the closest already-built wall in our template that has two neighbours
-	# also in the template (So they form a straight line of 3)
-	best_middle = None
-	best_dist = float('inf')
+	Marks a laucher pocket and queues the launcher build at this position.
+	"""
+	# Direction from the gap toward the core (snapped to cardinal so the bots can still get back even if the gap is diagonal (corner))
+	inward_raw = self.target.direction_to(self.core_pos)
+	inward = snap_to_cardinal(inward_raw)
+	launcher_pos = self.target.add(inward)
 
-	board = self.defence_walls_board & self.team_buildings_board
-	temp = board
-	while temp:
-		(temp, pos) = self.pop_lsb(temp)
-		# Check if neighbours along the wall are also built walls
-		for d in CARDINAL_DIRECTIONS:
-			left = pos.add(d)
-			right = pos.add(d.opposite())
-			if self.check_bit(board, left) and self.check_bit(board, right):
-				dist = self.chebyshev(current, pos)
-				if dist < best_dist:
-					best_dist = dist
-					best_middle = pos	
-				break
-	
-	if best_middle is None:
-		# No triplet available yet - just skip for now
-		return
+	# Reserve the gap, the launcher tile, and the two flanking tiles
+	self.defence_walls_board = self.clear_bit(self.defence_walls_board, self.target)
+	self.launcher_pocket_board = self.set_bit(self.launcher_pocket_board, self.target)
+	self.launcher_pocket_board = self.set_bit(self.launcher_pocket_board, launcher_pos)
 
+	# Flanks are perpendicular to the inward axis (90 degree rotations)
+	for flank_dir in (inward.rotate_left().rotate_left(), inward.rotate_right().rotate_right()):
+		flank_pos = launcher_pos.add(flank_dir)
+		if self.is_valid_position(flank_pos):
+			self.launcher_pocket_board = self.set_bit(self.launcher_pocket_board, flank_pos)
+			self.defence_walls_board = self.clear_bit(self.defence_walls_board, flank_pos)
 
-
-def pick_conveyor_target(self: DefenderBot, ct: Controller, reached_target: bool):
-	target_pos = next_unbuilt_defence_tile(self, ct, self.defence_conveyors_board)
-
-	if target_pos is None:
-		self.task_complete(ct)
-		return True
-
-	self.change_target(target_pos, 2)
-	self.phase += 1
+	# Queue the launcher build immediately - switch target to the launcher tile
+	self.change_target(launcher_pos, 2)
+	self.phase = phases.index(build_launcher) # type: ignore
 	return True
 
-
-def build_conveyor(self: DefenderBot, ct: Controller, reached_target: bool):
+def build_launcher(self: DefenderBot, ct: Controller, reached_target: bool):
 	if reached_target:
 		if ct.get_action_cooldown() == 0:
-			# Conveyors face inward toward the core
-			direction = self.target.direction_to(self.core_pos)
-			self.phase -= 1
-			return True
-		return False
-
-
+			# Move ut of the way if standing on the launcher tile
+			self_pos = ct.get_position()
+			if self_pos == self.target:
+				for d in DIRECTIONS:
+					check_pos = self_pos.add(d)
+					if self.is_valid_position(check_pos) and self.check_bit(self.walkable_board, check_pos):
+						if ct.can_move(d):
+							ct.move(d)
+							break
+				return False
+			
+			if ct.can_build_launcher(self.target):
+				ct.build_launcher(self.target)
+				# Back to wall-building loop
+				self.phase = phases.index(pick_wall_target)
+				return True
+			
+	return False
+			
 def is_valid(self: DefenderBot, ct: Controller, task: TaskData) -> bool:
 	return True
 
 
-phases = [init_templates, pick_wall_target, build_wall, pick_conveyor_target, build_conveyor]
+phases = [
+    init_templates,
+    pick_wall_target, 
+	build_wall,
+	build_launcher,
+]
 do_once = True

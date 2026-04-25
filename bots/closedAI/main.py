@@ -1,4 +1,5 @@
 from cambc import Controller, Direction, EntityType, Environment, Position, GameConstants
+from closedAI.Launcher import LauncherBot
 from closedAI.Bot import Bot
 from closedAI.BuilderBot import BuilderBot
 from closedAI.DefenderBot import DefenderBot
@@ -36,6 +37,8 @@ class Player:
 				self.bot = SentinelBot(ct)
 			elif etype == EntityType.GUNNER:
 				self.bot = GunnerBot(ct)
+			elif etype == EntityType.LAUNCHER:
+				self.bot = LauncherBot(ct)
 			
 			self.first_turn = False
         
