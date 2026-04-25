@@ -6,7 +6,7 @@ if TYPE_CHECKING:
 
 from ..Tasktypes import BuilderTask, TaskData
 from cambc import Controller, Position, Direction
-from ..Constants import DIRECTIONS
+from ..Constants import DIRECTIONS, CARDINAL_DIRECTIONS
 
 task_type = BuilderTask.BUILD_CORE_DEFENCE
 
@@ -157,13 +157,55 @@ def build_wall(self: DefenderBot, ct: Controller, reached_target: bool):
 					return False
 
 			if ct.can_build_barrier(self.target):
+				# Region check: simulate placing the wall
+				current_region = self.update_region(self.walkable_board, self_pos)
+				simulated_walkable = self.walkable_board & ~target_bitmask
+				simulated_region = self.update_region(simulated_walkable, self_pos)
+
+				if simulated_region != current_region:
+					# Placing this wall would cut off part of the region
+					# Swap this wall for a launcher gap instead
+					convert_to_launcher_gap(self, ct)
+					self.phase -= 1
+					return False
 				
 				ct.build_barrier(self.target)
 				# Loop back to pick the next wall
 				self.phase -= 1
 				return False
 		return False
-			
+
+def convert_to_launcher_gap(self: DefenderBot, ct: Controller):
+	"""
+	Find the nearest trio of adjacent walls, destroy them, and build a launcher in the middle. 
+	"""		
+	current = ct.get_position()
+	# Find the closest already-built wall in our template that has two neighbours
+	# also in the template (So they form a straight line of 3)
+	best_middle = None
+	best_dist = float('inf')
+
+	board = self.defence_walls_board & self.team_buildings_board
+	temp = board
+	while temp:
+		(temp, pos) = self.pop_lsb(temp)
+		# Check if neighbours along the wall are also built walls
+		for d in CARDINAL_DIRECTIONS:
+			left = pos.add(d)
+			right = pos.add(d.opposite())
+			if self.check_bit(board, left) and self.check_bit(board, right):
+				dist = self.chebyshev(current, pos)
+				if dist < best_dist:
+					best_dist = dist
+					best_middle = pos	
+				break
+	
+	if best_middle is None:
+		# No triplet available yet - just skip for now
+		return
+
+
+
 def pick_conveyor_target(self: DefenderBot, ct: Controller, reached_target: bool):
 	target_pos = next_unbuilt_defence_tile(self, ct, self.defence_conveyors_board)
 
