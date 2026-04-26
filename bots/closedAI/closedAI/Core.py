@@ -12,6 +12,11 @@ class Core(Bot):
 	def turn_start(self, ct: Controller):
 		super().turn_start(ct)
 		round = ct.get_current_round()
+		if round==1:
+			spawn_pos = ct.get_position().add(self.spawn_d)
+			if ct.can_spawn(spawn_pos):
+				ct.spawn_builder(spawn_pos)
+			return 
 		if self.num_spawned < 2 or (self.num_spawned<4 and round>15):
 
 			spawn_pos = ct.get_position().add(self.spawn_d)
