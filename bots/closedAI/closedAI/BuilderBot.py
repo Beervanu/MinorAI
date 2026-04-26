@@ -51,6 +51,7 @@ class BuilderBot(Bot):
 			Position(self.core_pos.x, self.map_height-1 - self.core_pos.y)]
 		
 		self.symmetry_positions.sort(key=lambda pos: self.chebyshev(ct.get_position(), pos))
+		self.first_bridge_built = False
 
 	def get_task_secondary_priority(self, ct: Controller, task: TaskData):
 		prio = float('inf')
@@ -506,6 +507,11 @@ class BuilderBot(Bot):
 
 			# If path is valid follow it
 			if self.path:
+				if self.path_index>0 and self.path_index<=len(self.path):
+					print('valid')
+					if self.path[self.path_index-1] != current_pos:
+						print('got launched')
+						self.compute_path(ct, current_pos, self.target)
 				self.follow_path(ct)
 			else:
 				print('No path to follow??')
@@ -556,7 +562,9 @@ class BuilderBot(Bot):
 
 	def task_complete(self, ct:Controller):
 		self.end_task()
-		re_add_find_ore = self.task['type'] == BuilderTask.FIND_ORE
+		if not self.first_bridge_built and self.task['type'] == BuilderTask.BUILD_BRIDGE:
+			self.first_bridge_built = True
+			ESSENTIAL_TASKS.remove(BuilderTask.BUILD_BRIDGE)
 		super().task_complete(ct)
 		self.add_task(ct,BuilderTask.FIND_ORE, None, True)
 

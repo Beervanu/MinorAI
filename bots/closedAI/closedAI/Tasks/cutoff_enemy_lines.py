@@ -21,7 +21,7 @@ def attack(self: BuilderBot, ct:Controller, reached_target: bool):
 	if reached_target:
 		b_id = ct.get_tile_building_id(self.task['data'])
 		if b_id:
-			if ct.get_team() == self.team:
+			if ct.get_team(b_id) == self.team:
 				if ct.can_destroy(self.task['data']):
 					ct.destroy(self.task['data'])
 

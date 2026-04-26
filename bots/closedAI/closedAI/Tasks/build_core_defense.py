@@ -38,7 +38,7 @@ def compute_defence_walls_board(self: DefenderBot) -> int:
 
 def next_unbuilt_defence_tile(self: DefenderBot, ct: Controller, template_board: int) -> Position | None:
 	"""Returns the closest template tile not yet occupied by any building."""
-	unbuilt = template_board & (self.walkable_board | ~self.seen_board)
+	unbuilt = template_board & (self.walkable_board | ~self.seen_board) & self.connected_region
 	if unbuilt == 0:
 		return None
 
@@ -79,6 +79,18 @@ def pick_wall_target(self: DefenderBot, ct: Controller, reached_target: bool):
 
 
 def build_wall(self: DefenderBot, ct: Controller, reached_target: bool):
+	if not reached_target:
+		target_pos = next_unbuilt_defence_tile(self, ct, self.defence_walls_board)
+		if target_pos is None:
+			# All walls built and launchers handled - task complete
+			self.task_complete(ct)
+			return True
+		curr_pos = ct.get_position()
+		new_target_dist = curr_pos.distance_squared(target_pos)
+		if new_target_dist<curr_pos.distance_squared(self.target):
+			reached_target = new_target_dist<=2
+			self.change_target(target_pos, 2)
+	 
 	if ct.is_in_vision(self.target):
 		if not self.check_bit(self.walkable_board, self.target):
 			self.phase = phases.index(pick_wall_target)
