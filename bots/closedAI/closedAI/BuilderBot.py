@@ -10,7 +10,7 @@ from .helper_functions import *
 class BuilderBot(Bot):
 	def __init__(self, ct:Controller, core_pos: Position, move_dir: Direction):
 		# Initialises the parent class (Bot) to generate the bit boards and inherit the corresponding variables and functions
-	
+		
 		
 		super().__init__(ct, EntityType.BUILDER_BOT)
 		self.core_pos = core_pos
@@ -52,6 +52,30 @@ class BuilderBot(Bot):
 		
 		self.symmetry_positions.sort(key=lambda pos: self.chebyshev(ct.get_position(), pos))
 		self.first_bridge_built = False
+		self.defence_walls_board = 0
+
+	def compute_defence_walls_board(self) -> int:
+		"""
+		Builds a bitboard of wall positions 4 tiles out from the core centre.
+		Skips tiles that are off-map or are already occupied by environmental walls.
+		"""
+		board = 0
+		cx, cy = self.core_pos.x, self.core_pos.y
+		radius = 6
+
+		for dx in range(-radius, radius + 1):
+			for dy in range(-radius, radius + 1):
+				# Only keep perimeter tiles — skip interior
+				if abs(dx) != radius and abs(dy) != radius:
+					continue
+				nx, ny = cx + dx, cy + dy
+				if not (0 <= nx < self.map_width and 0 <= ny < self.map_height):
+					continue
+				pos = Position(nx, ny)
+				if self.check_bit(self.walls_board, pos):
+					continue
+				board = self.set_bit(board, pos)
+		return board
 
 	def get_task_secondary_priority(self, ct: Controller, task: TaskData):
 		prio = float('inf')
@@ -144,7 +168,7 @@ class BuilderBot(Bot):
 		# shift to recenter bitmask on index - order is important, else we might delete part of the mask
 		neighbour_bit_mask >>= self.map_width*3 + 3
 		neighbours = neighbour_bit_mask & (goal_bitmask | ~(self.team_conveyors_board))
-		neighbours &= (self.walkable_board|(~self.seen_board))  & ~(self.axionite_ores_board | self.titanium_ores_board)
+		neighbours &= (self.walkable_board|(~self.seen_board))  & ~(self.axionite_ores_board | self.titanium_ores_board | self.defence_walls_board)
 		neighbours &= self.connected_region
 		while neighbours:
 			(neighbours, nb) = self.pop_lsb(neighbours)
@@ -387,7 +411,7 @@ class BuilderBot(Bot):
 			# since the last point in the bridge is our target, this could be the core or another bridge, we don't want to consider it for collisions
 			remaining_board = self.clear_bit(remaining_board, path[-1])
 			# don't want to build a bridge over ore
-			mask |= self.titanium_ores_board | self.axionite_ores_board
+			mask |= self.titanium_ores_board | self.axionite_ores_board | self.defence_walls_board
 			#don't want to build onto our own conveyors
 			mask |= self.team_conveyors_board
 			#eprint(remaining_board&self.team_conveyors_board, remaining_board&(self.titanium_ores_board | self.axionite_ores_board), remaining_board&(~self.walkable_board & self.seen_board))
@@ -449,6 +473,8 @@ class BuilderBot(Bot):
 			print(f'Qd Task no. {i+1}: {t['type']}, Data: {t['data']}')
 		# Update our map with any newly visible terrain
 		self.update_terrain_vision(ct)
+		if not self.defence_walls_board:
+			self.defence_walls_board = self.compute_defence_walls_board()
 		#check for symmetry
 		if self.map_symmetry == MapSymmetry.UNKNOWN:
 			self.check_symmetry()

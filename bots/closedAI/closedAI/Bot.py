@@ -423,7 +423,7 @@ class Bot:
 					'feeds_team': None
 				})
 			if upstream_harvesters and self.entity_type == EntityType.BUILDER_BOT:
-				self.add_task(ct, BuilderTask.BUILD_BRIDGE, pos, False)
+				self.add_task(ct, BuilderTask.BUILD_BRIDGE, pos, True)
 			
 			
 			# then update id board
@@ -700,7 +700,7 @@ class Bot:
 			valid_pos.sort(key=lambda po: self.chebyshev(self.core_pos, po))
 			for pos in valid_pos:
 				if self.check_bit(self.walkable_board, pos) and not self.check_bit(self.axionite_ores_board|self.titanium_ores_board, pos):
-					self.add_task(ct,BuilderTask.BUILD_BRIDGE, (pos))
+					self.add_task(ct,BuilderTask.BUILD_BRIDGE, (pos), True)
 					break
 		print(f'Updating buildings took {ct.get_cpu_time_elapsed()}μs')
 		# we want to cutoff enemy lines that feed enemy buildings

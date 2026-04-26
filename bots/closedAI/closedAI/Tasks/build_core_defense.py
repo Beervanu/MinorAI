@@ -12,30 +12,6 @@ from ..helper_functions import eprint
 
 task_type = BuilderTask.BUILD_CORE_DEFENCE
 
-
-def compute_defence_walls_board(self: DefenderBot) -> int:
-	"""
-	Builds a bitboard of wall positions 4 tiles out from the core centre.
-	Skips tiles that are off-map or are already occupied by environmental walls.
-	"""
-	board = 0
-	cx, cy = self.core_pos.x, self.core_pos.y
-	radius = 6
-
-	for dx in range(-radius, radius + 1):
-		for dy in range(-radius, radius + 1):
-			# Only keep perimeter tiles — skip interior
-			if abs(dx) != radius and abs(dy) != radius:
-				continue
-			nx, ny = cx + dx, cy + dy
-			if not (0 <= nx < self.map_width and 0 <= ny < self.map_height):
-				continue
-			pos = Position(nx, ny)
-			if self.check_bit(self.walls_board, pos):
-				continue
-			board = self.set_bit(board, pos)
-	return board
-
 def next_unbuilt_defence_tile(self: DefenderBot, ct: Controller, template_board: int) -> Position | None:
 	"""Returns the closest template tile not yet occupied by any building."""
 	unbuilt = template_board & (self.walkable_board | ~self.seen_board) & self.connected_region
@@ -54,15 +30,6 @@ def next_unbuilt_defence_tile(self: DefenderBot, ct: Controller, template_board:
 			best_dist = dist
 			best = pos
 	return best
-
-
-def init_templates(self: DefenderBot, ct: Controller, reached_target: bool):
-	"""Compute and cache the wall and conveyor bitboards on first run."""
-	if not self.defence_walls_board:
-		self.defence_walls_board = compute_defence_walls_board(self)
-	self.phase = phases.index(pick_wall_target)
-	return True
-
 
 def pick_wall_target(self: DefenderBot, ct: Controller, reached_target: bool):
 	"""Find the nearest unbuilt wall tile and target it."""
@@ -269,7 +236,6 @@ def is_valid(self: DefenderBot, ct: Controller, task: TaskData) -> bool:
 
 
 phases = [
-    init_templates,
     pick_wall_target, 
 	build_wall,
 	build_launcher,
