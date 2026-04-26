@@ -18,6 +18,7 @@ class ConveyorInfo(TypedDict):
 
 class Bot:
 	def __init__(self, ct: Controller, entity_type:EntityType):
+		self.id = ct.get_current_round()
 		self.core_pos = Position(0,0)
 		self.entity_type = entity_type
 		self.task_num = 0
@@ -423,7 +424,7 @@ class Bot:
 					'feeds_team': None
 				})
 			if upstream_harvesters and self.entity_type == EntityType.BUILDER_BOT:
-				self.add_task(ct, BuilderTask.BUILD_BRIDGE, pos, True)
+				self.add_task(ct, BuilderTask.BUILD_BRIDGE, pos, False)
 			
 			
 			# then update id board
@@ -700,7 +701,7 @@ class Bot:
 			valid_pos.sort(key=lambda po: self.chebyshev(self.core_pos, po))
 			for pos in valid_pos:
 				if self.check_bit(self.walkable_board, pos) and not self.check_bit(self.axionite_ores_board|self.titanium_ores_board, pos):
-					self.add_task(ct,BuilderTask.BUILD_BRIDGE, (pos), True)
+					self.add_task(ct,BuilderTask.BUILD_BRIDGE, (pos), False)
 					break
 		print(f'Updating buildings took {ct.get_cpu_time_elapsed()}μs')
 		# we want to cutoff enemy lines that feed enemy buildings
@@ -767,7 +768,7 @@ class Bot:
 		# 	if self.conveyor_ids[i]:
 		# 		print(i.x, i.y, self.conveyor_ids[i])
 		if ct.get_cpu_time_elapsed()>2000:
-			eprint('Lagging, Round:', ct.get_current_round(), 'Bot:', ct.get_entity_type())
+			eprint('Lagging, Round:', ct.get_current_round(), 'Team: ', self.team,'ID: ', self.id)
 
 	def get_task_identifier(self, task:Task, data:Any):
 		identifier = 0

@@ -36,7 +36,7 @@ class DefenderBot(BuilderBot):
 		self.marker_info.core_x = self.core_pos.x
 		self.marker_info.core_y = self.core_pos.y
 
-		self.add_task(ct, BuilderTask.BUILD_CORE_DEFENCE, 0)
+		self.add_task(ct, BuilderTask.BUILD_CORE_DEFENCE, {'wall_counter':0, 'build_wall_override':False})
 	
 	def turn_end(self, ct:Controller):
 		super().turn_end(ct)

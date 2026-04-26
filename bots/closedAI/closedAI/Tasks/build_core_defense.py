@@ -36,6 +36,9 @@ def pick_wall_target(self: DefenderBot, ct: Controller, reached_target: bool):
 	target_pos = next_unbuilt_defence_tile(self, ct, self.defence_walls_board)
 
 	if target_pos is None:
+		#if we are blocked by a unit
+		if self.defence_walls_board & self.units_board:
+			return False
 		# All walls built and launchers handled - task complete
 		self.task_complete(ct)
 		return True
@@ -49,6 +52,8 @@ def build_wall(self: DefenderBot, ct: Controller, reached_target: bool):
 	if not reached_target:
 		target_pos = next_unbuilt_defence_tile(self, ct, self.defence_walls_board)
 		if target_pos is None:
+			if self.defence_walls_board & self.units_board:
+				return False
 			# All walls built and launchers handled - task complete
 			self.task_complete(ct)
 			return True
@@ -119,13 +124,13 @@ def build_wall(self: DefenderBot, ct: Controller, reached_target: bool):
 				# Tiles that were reachable but now aren't - excluding the target itself
 				lost_tiles = current_region & ~simulated_region & ~target_bitmask
 				
-				if lost_tiles != 0 or self.task['data']>=12:
+				if lost_tiles != 0 or self.task['data']['wall_counter']>=12 and not self.task['data']['build_wall_override']:
 					convert_to_launcher_pocket(self, ct)
 					return True	
 				
 				if ct.can_build_barrier(self.target):
-					#task data is a wall counter
-					self.task['data']+=1
+					self.task['data']['wall_counter']+=1
+					self.task['data']['build_wall_override'] = False
 					ct.build_barrier(self.target)
 					self.phase = phases.index(pick_wall_target)
 					return False
@@ -149,19 +154,39 @@ def convert_to_launcher_pocket(self: DefenderBot, ct: Controller):
 	if not self.check_bit(self.walkable_board, launcher_pos):
 		launcher_pos = self.target.add(inward.opposite())
 		if not self.check_bit(self.walkable_board, launcher_pos):
+			self.task['data']['build_wall_override']=True
 			return False
 			
 	# Reserve the gap, the launcher tile, and the two flanking tiles
 	
-	self.launcher_pocket_board = self.set_bit(self.launcher_pocket_board, self.target)
-	self.launcher_pocket_board = self.set_bit(self.launcher_pocket_board, launcher_pos)
-
+	flank_free = False
 	# Flanks are perpendicular to the inward axis (90 degree rotations)
 	for flank_dir in (inward.rotate_left().rotate_left(), inward.rotate_right().rotate_right()):
 		flank_pos = launcher_pos.add(flank_dir)
-		if self.is_valid_position(flank_pos):
+		if self.is_valid_position(flank_pos) and self.check_bit(self.walkable_board, flank_pos):
+			flank_free = True
 			self.launcher_pocket_board = self.set_bit(self.launcher_pocket_board, flank_pos)
 			self.defence_walls_board = self.clear_bit(self.defence_walls_board, flank_pos)
+	if not flank_free:
+		#retry with a different launcher position
+		if launcher_pos == self.target.add(inward.opposite()):
+			self.task['data']['build_wall_override']=True
+			return False
+		launcher_pos = self.target.add(inward.opposite())
+		for flank_dir in (inward.rotate_left().rotate_left(), inward.rotate_right().rotate_right()):
+			flank_pos = launcher_pos.add(flank_dir)
+			if self.is_valid_position(flank_pos) and self.check_bit(self.walkable_board, flank_pos):
+				flank_free = True
+				self.launcher_pocket_board = self.set_bit(self.launcher_pocket_board, flank_pos)
+				self.defence_walls_board = self.clear_bit(self.defence_walls_board, flank_pos)
+		#if its still not free just build a wall
+		if not flank_free:
+			self.task['data']['build_wall_override']=True
+			return False
+	self.launcher_pocket_board = self.set_bit(self.launcher_pocket_board, self.target)
+	self.launcher_pocket_board = self.set_bit(self.launcher_pocket_board, launcher_pos)
+
+
 
 	# Queue the launcher build immediately - switch target to the launcher tile
 	self.change_target(launcher_pos, 2)
@@ -222,7 +247,7 @@ def build_launcher(self: DefenderBot, ct: Controller, reached_target: bool):
 							ct.place_marker(check_pos, write.as_int)
 							break
 				ct.build_launcher(self.target)
-				self.task['data'] = 0
+				self.task['data']['wall_counter'] = 0
 				# Back to wall-building loop
 				self.phase = phases.index(pick_wall_target)
 				return True
