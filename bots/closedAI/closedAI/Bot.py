@@ -531,7 +531,8 @@ class Bot:
 				del self.conveyor_lines[id]
 
 	def update_terrain_vision(self, ct:Controller):
-		"""Called after moving to map newly revealed terrain.""" 
+		"""Called after moving to map newly revealed terrain."""
+		t = ct.get_cpu_time_elapsed()
 		# This acts as a way to fill in the dark areas of map memory.
 		print("Updating terrain vision")
 		old_walkable_board = self.walkable_board
@@ -577,7 +578,8 @@ class Bot:
 			if env == Environment.ORE_AXIONITE or env == Environment.ORE_TITANIUM:
 				self.ore_adjacent_board |= self.get_cardinal_bitmask(current_pos)
 			self.seen_board,self.seen_symmetry_boards = self.set_symmetry_bit(self.seen_board,self.seen_symmetry_boards, pos)
-		print(f'Updating environment took {ct.get_cpu_time_elapsed()}μs')
+		print(f'Updating environment took {ct.get_cpu_time_elapsed()-t}μs')
+		t= ct.get_cpu_time_elapsed()
 		harvester_positions:list[Position] = []
 		conveyors_added = False
 		#then update buildings
@@ -703,7 +705,8 @@ class Bot:
 				if self.check_bit(self.walkable_board, pos) and not self.check_bit(self.axionite_ores_board|self.titanium_ores_board, pos):
 					self.add_task(ct,BuilderTask.BUILD_BRIDGE, (pos), False)
 					break
-		print(f'Updating buildings took {ct.get_cpu_time_elapsed()}μs')
+		print(f'Updating buildings took {ct.get_cpu_time_elapsed()-t}μs')
+		t=ct.get_cpu_time_elapsed()
 		# we want to cutoff enemy lines that feed enemy buildings
 		if conveyors_added and is_builder_bot:
 			found_ids:set[int] = set()
@@ -722,10 +725,11 @@ class Bot:
 					self.add_task(ct, BuilderTask.CUTOFF_ENEMY_LINES, self.closest_in_board(bitb, ct.get_position()), True)
 
 
-		print(f'Calculating enemy line cutoff points took {ct.get_cpu_time_elapsed()}μs')
+		print(f'Calculating enemy line cutoff points took {ct.get_cpu_time_elapsed()-t}μs')
+		t=ct.get_cpu_time_elapsed()
 		if old_walkable_board!=self.walkable_board:
 			self.connected_region = self.update_region(self.walkable_board|(self.max_int-self.seen_board),current_pos)
-			print(f'Updating connected region took {ct.get_cpu_time_elapsed()}μs')
+			print(f'Updating connected region took {ct.get_cpu_time_elapsed()-t}μs')
 
 
 	def turn_start(self,ct):

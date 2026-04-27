@@ -2,7 +2,9 @@ from cambc import Controller, Position, Direction, EntityType, GameConstants
 from .Tasktypes import BuilderTask, TaskData
 from .Markers import TaskMarkerData
 import heapq
+from functools import lru_cache
 from math import floor, ceil
+
 from .Bot import *
 from .Tasks import builder_tasks, DO_ONCE_TASKS
 from .helper_functions import *
@@ -35,6 +37,7 @@ class BuilderBot(Bot):
 		self.do_bug_pathfinding=False
 		# The ordered list of positions and the corresponding bitboard
 		self.bridge_path = []
+		self.known_bridges_at_path_construction = 0
 		self.bridge_path_index = 0
 		self.bridge_path_board = None
 		self.path = [] # List[Position] - ordered steps from current position to target
@@ -135,7 +138,15 @@ class BuilderBot(Bot):
 			(neighbours, nb) = self.pop_lsb(neighbours)
 			yield nb
 
-	def get_bridge_neighbours(self, pos: Position, goal_bitmask:int):
+	@lru_cache(maxsize=2)
+	def get_full_lines_board(self, round:int):
+		capacity_board = 0
+		for i in self.conveyor_lines:
+			if len(self.conveyor_lines[i]['harvesters'])>=4:
+				capacity_board|=self.conveyor_lines[i]['bitboard']
+		return capacity_board
+
+	def get_bridge_neighbours(self, pos: Position, goal_bitmask:int, round:int):
 		"""
 		Returns bridge-buildable neighbour positions (non-wall, non-ore, in-bounds) (avoid building bridges on ore for now)
 		"""
@@ -167,9 +178,20 @@ class BuilderBot(Bot):
 		neighbour_bit_mask<<=index
 		# shift to recenter bitmask on index - order is important, else we might delete part of the mask
 		neighbour_bit_mask >>= self.map_width*3 + 3
-		neighbours = neighbour_bit_mask & (goal_bitmask | ~(self.team_conveyors_board))
+
+
+		neighbours = neighbour_bit_mask & (goal_bitmask | ~(self.get_full_lines_board(round)))
 		neighbours &= (self.walkable_board|(~self.seen_board))  & ~(self.axionite_ores_board | self.titanium_ores_board | self.defence_walls_board)
 		neighbours &= self.connected_region
+		if ids:= self.conveyor_ids[pos]:
+			for id in ids:
+				if len(self.conveyor_lines[id]['harvesters'])<4:
+					for i in range(len(self.conveyor_lines[id]['positions'])):
+						if self.conveyor_lines[id]['positions'][i] == pos:
+							yield from self.conveyor_lines[id]['positions'][i+1:]
+							break
+				break
+			
 		while neighbours:
 			(neighbours, nb) = self.pop_lsb(neighbours)
 			yield nb
@@ -177,9 +199,10 @@ class BuilderBot(Bot):
 	def ara(self,ct:Controller, start: Position, goal: Position, timelimit:int, bridge:bool =False, from_save_state=False):
 		starttime = ct.get_cpu_time_elapsed()
 		neighbour_function = self.get_neighbours
+		round = ct.get_current_round()
 		if bridge:
 			goal_bitmask = self.get_bitmask(goal)
-			neighbour_function = lambda pos: self.get_bridge_neighbours(pos, goal_bitmask)
+			neighbour_function = lambda pos: self.get_bridge_neighbours(pos, goal_bitmask, round)
 		current = None
 		target_radius_sq = 0 if bridge else self.target_radius_sq
 		best_goal_score = float('inf')
@@ -377,14 +400,12 @@ class BuilderBot(Bot):
 			return False
 		result = self.ara(ct, start, goal, 700, True)
 		if result is None:
-			self.bridge_path = []
-			self.bridge_path_index = 0
-			self.bridge_path_board = 0
+			self.reset_bridge_path()
 			return False
 		
 		self.bridge_path =[start]+ result
 		self.bridge_path_index = 0
-
+		self.known_bridges_at_path_construction = self.team_conveyors_board|self.enemy_conveyors_board
 		# Build the path bitboard for collision detection later 
 		self.bridge_path_board = 0
 		for pos in self.bridge_path:
@@ -412,8 +433,8 @@ class BuilderBot(Bot):
 			remaining_board = self.clear_bit(remaining_board, path[-1])
 			# don't want to build a bridge over ore
 			mask |= self.titanium_ores_board | self.axionite_ores_board | self.defence_walls_board
-			#don't want to build onto our own conveyors
-			mask |= self.team_conveyors_board
+			#don't want to build onto our own conveyors, that we didn't know about at path construction
+			mask |= self.team_conveyors_board & (~self.known_bridges_at_path_construction)
 			#eprint(remaining_board&self.team_conveyors_board, remaining_board&(self.titanium_ores_board | self.axionite_ores_board), remaining_board&(~self.walkable_board & self.seen_board))
 		return (remaining_board & mask)
 
@@ -504,8 +525,10 @@ class BuilderBot(Bot):
 				print('cancelled processing')
 				break
 			current_pos = ct.get_position()
-			
+			task_time = ct.get_cpu_time_elapsed()
 			keep_processing_tasks = self.process_tasks(ct)
+			print (f'Task took {ct.get_cpu_time_elapsed()-task_time}μs')
+			pathfind_time = ct.get_cpu_time_elapsed()
 			# if we don't want to pathfind
 			if self.target is None or not self.do_pathfinding:
 				print('No target/pathfinding off')
@@ -541,8 +564,8 @@ class BuilderBot(Bot):
 				self.follow_path(ct)
 			else:
 				print('No path to follow??')
-			print (f'Task took {ct.get_cpu_time_elapsed()-task_time}μs')
-			task_time = ct.get_cpu_time_elapsed()
+			
+			print (f'Pathfinding took {ct.get_cpu_time_elapsed()-pathfind_time}μs')
 			print(f'Current Target: {self.target}, RadiusSq: {self.target_radius_sq}')
 			print(f"Path: {self.path_string(self.path)}")
 		print(f'Bridge Path: {self.path_string(self.bridge_path)}')
@@ -618,6 +641,7 @@ class BuilderBot(Bot):
 		self.bridge_path = []
 		self.bridge_path_index =0
 		self.bridge_path_board =0
+		self.known_bridges_at_path_construction = 0
 	
 	def change_target(self, target:Position, radius_sq=2):
 		"""

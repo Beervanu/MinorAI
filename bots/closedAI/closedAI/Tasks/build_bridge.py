@@ -32,6 +32,7 @@ def generate_path(self: BuilderBot, ct:Controller, reached_target: bool):
 		elif not self.check_bit(self.walkable_board, bridge_start) or self.check_bit(self.team_conveyors_board, bridge_start):
 			# if we have a collision directly in front of us and its not a unit, panic and complete task
 			# TODO: destroy the previously made path and reconstruct around obstacle
+			print('already a path')
 			self.task_complete(ct)
 			return True
 		
@@ -57,6 +58,8 @@ def generate_path(self: BuilderBot, ct:Controller, reached_target: bool):
 	self.compute_bridge_path(ct, bridge_start, goal)
 	#if there is no path from this start we just abandon this harvester
 	if not self.bridge_path:
+		self.task['timeout'] = ct.get_current_round()+25
+		self.invalid_tasks.append(self.task)
 		self.task_complete(ct)
 		return True
 	self.change_target(self.bridge_path[0], 2)
@@ -73,6 +76,18 @@ def choose_bridge_type(self:BuilderBot, ct:Controller, reached_target:bool):
 		return True
 	self.do_pathfinding = True
 	if reached_target:
+		current_bridge_point = self.bridge_path[self.bridge_path_index]
+		if self.bridge_path_index<len(self.bridge_path)-1:
+			next_bridge_point = self.bridge_path[self.bridge_path_index+1]
+			if ids:=self.conveyor_ids[current_bridge_point]:
+				for id in ids:
+					i = self.conveyor_lines[id]['positions'].index(current_bridge_point)
+					# is the next bridge point downstream of this conveyor - if so go to the next bridge point
+					if next_bridge_point in self.conveyor_lines[id]['positions'][i+1:]:
+						self.bridge_path_index+=1
+						self.change_target(self.bridge_path[self.bridge_path_index])
+						return True
+					break
 		#get rid of roads/markers in the way
 		building_id = ct.get_tile_building_id(self.target)
 		if building_id:
@@ -94,8 +109,6 @@ def choose_bridge_type(self:BuilderBot, ct:Controller, reached_target:bool):
 
 		#try to build a bridge or a conveyor		
 		if ct.get_action_cooldown() == 0:
-			
-			next_bridge_point = self.bridge_path[self.bridge_path_index+1]
 			x_diff =next_bridge_point.x-self.target.x
 			if x_diff:
 				x_dir = None
