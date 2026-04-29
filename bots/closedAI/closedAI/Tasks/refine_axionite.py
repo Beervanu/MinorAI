@@ -13,25 +13,30 @@ def choose_foundry_pos(self: BuilderBot, ct:Controller, reached_target: bool):
 	
 	ax_pos = self.task['data']['ax_in']
 	downstream_ax = []
+	ti_connected = False
 	for id in self.conveyor_ids[ax_pos]:
 
 		for i in range(len(self.conveyor_lines[id]['positions'])):
 			if ax_pos == self.conveyor_lines[id]['positions'][i]:
 				downstream_ax = self.conveyor_lines[id]['positions'][i:]
+				
 				break
+		ti_connected = len(self.conveyor_lines[id]['ti_harvesters'])>0
 		break
 	
 	for splitter_pos in reversed(downstream_ax):
-		fed_by = self.conveyors_pointing_into[splitter_pos].intersection(downstream_ax)
-		if fed_by:
-			fed_by = fed_by.pop()
+		fed_by_set = self.conveyors_pointing_into[splitter_pos].intersection(downstream_ax)
+		fed_by:Position
+		if fed_by_set:
+			fed_by = fed_by_set.pop()
 		else:
 			for id in self.conveyor_ids[splitter_pos]:
-				for harv in self.conveyor_lines[id]['harvesters']:
+				for harv in self.conveyor_lines[id]['ax_harvesters']:
 					if harv.distance_squared(splitter_pos)==1:
 						fed_by = harv
 						break
 				break
+		
 		if not fed_by:
 			continue
 
@@ -53,6 +58,21 @@ def choose_foundry_pos(self: BuilderBot, ct:Controller, reached_target: bool):
 				if foundry_out == splitter_pos:
 					continue
 				if self.check_bit(self.walkable_board, foundry_out):
+					#connect ti line to splitter
+					if not ti_connected:
+						bitb = 0
+						for i in self.conveyor_lines:
+							if self.conveyor_lines[i]['ti_harvesters']:
+								bitb|= self.conveyor_lines[i]['bitboard']
+						if not bitb:
+							continue
+						
+						
+						self.add_task(ct, BuilderTask.BUILD_BRIDGE, {
+							'start':self.closest_in_board(bitb, splitter_pos),
+							'to_feed': splitter_pos
+						})
+
 					self.task['data']['splitter_pos'] = splitter_pos
 					self.task['data']['foundry_pos'] = foundry_pos
 					#connect foundry to core
@@ -67,6 +87,9 @@ def choose_foundry_pos(self: BuilderBot, ct:Controller, reached_target: bool):
 							splitter_out = i
 							break
 						self.add_task(ct, BuilderTask.BUILD_BRIDGE, {'start':splitter_out, 'to_feed':None})
+					
+					
+						
 
 					#figure out which direction to point the splitter
 					if fed_by.distance_squared(splitter_pos)==1:

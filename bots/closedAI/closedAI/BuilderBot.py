@@ -56,7 +56,6 @@ class BuilderBot(Bot):
 			Position(self.core_pos.x, self.map_height-1 - self.core_pos.y)]
 		
 		self.symmetry_positions.sort(key=lambda pos: self.chebyshev(ct.get_position(), pos))
-		self.first_bridge_built = False
 		self.defence_walls_board = 0
 
 	def compute_defence_walls_board(self) -> int:
@@ -163,7 +162,7 @@ class BuilderBot(Bot):
 	def get_full_lines_board(self, round:int):
 		capacity_board = 0
 		for i in self.conveyor_lines:
-			if len(self.conveyor_lines[i]['harvesters'])>=4:
+			if len(self.conveyor_lines[i]['ti_harvesters']|self.conveyor_lines[i]['ax_harvesters'])>=4:
 				capacity_board|=self.conveyor_lines[i]['bitboard']
 		return capacity_board
 
@@ -206,7 +205,7 @@ class BuilderBot(Bot):
 		neighbours &= self.connected_region
 		if ids:= self.conveyor_ids[pos]:
 			for id in ids:
-				if len(self.conveyor_lines[id]['harvesters'])<4:
+				if len(self.conveyor_lines[id]['ax_harvesters']|self.conveyor_lines[id]['ti_harvesters'])<4:
 					for i in range(len(self.conveyor_lines[id]['positions'])):
 						if self.conveyor_lines[id]['positions'][i] == pos:
 							yield from self.conveyor_lines[id]['positions'][i+1:]
@@ -217,19 +216,17 @@ class BuilderBot(Bot):
 			(neighbours, nb) = self.pop_lsb(neighbours)
 			yield nb
 
-	def ara(self,ct:Controller, start: Position, goal: Position, timelimit:int, bridge:bool =False, from_save_state=False):
+	def ara(self,ct:Controller, start: Position, goal: Position, timelimit:int, bridge:bool =False, from_save_state=False, rough_estimate:bool=True):
 		starttime = ct.get_cpu_time_elapsed()
 		neighbour_function = self.get_neighbours
 		round = ct.get_current_round()
-		if bridge:
-			goal_bitmask = self.get_bitmask(goal)
-			neighbour_function = lambda pos: self.get_bridge_neighbours(pos, goal_bitmask, round)
 		current = None
 		target_radius_sq = 0 if bridge else self.target_radius_sq
 		best_goal_score = float('inf')
 		best_goal_pos = None
 		weight:float = 2.5
 		if not from_save_state:
+			# self.pathfinding_save_state = {'time_out': 3 if bridge else 1}
 			# can happen occasionally
 			if start.distance_squared(goal) <= target_radius_sq:
 				print("already at target")
@@ -257,7 +254,12 @@ class BuilderBot(Bot):
 			goals = self.pathfinding_save_state['goals']
 			goal = self.pathfinding_save_state['goal']
 			start = self.pathfinding_save_state['start']
-			
+			bridge = self.pathfinding_save_state['bridge']
+				
+		if bridge:
+			target_radius_sq=0
+			goal_bitmask = self.get_bitmask(goal)
+			neighbour_function = lambda pos: self.get_bridge_neighbours(pos, goal_bitmask, round)	
 
 		out_of_time = False
 		while weight>=1 and open_set and (not out_of_time):
@@ -270,17 +272,17 @@ class BuilderBot(Bot):
 				# we failed to find a path on this run through: save our state in case we need to keep calculating next turn
 				if ct.get_cpu_time_elapsed()-starttime>timelimit or ct.get_cpu_time_elapsed()>1900:
 					out_of_time = True
-					if not bridge:
-						self.pathfinding_save_state['counter'] = counter
-						self.pathfinding_save_state['open_set'] = open_set
-						self.pathfinding_save_state['inconsistent_set'] = inconsistent_set
-						self.pathfinding_save_state['came_from'] = came_from
-						self.pathfinding_save_state['g_score'] = g_score
-						self.pathfinding_save_state['weight'] = weight
-						self.pathfinding_save_state['goals'] = goals
-						self.pathfinding_save_state['goal'] = goal
-						self.pathfinding_save_state['start'] = start
-						self.pathfinding_save_state['closed_set'] = closed_set
+					self.pathfinding_save_state['counter'] = counter
+					self.pathfinding_save_state['open_set'] = open_set
+					self.pathfinding_save_state['inconsistent_set'] = inconsistent_set
+					self.pathfinding_save_state['came_from'] = came_from
+					self.pathfinding_save_state['g_score'] = g_score
+					self.pathfinding_save_state['weight'] = weight
+					self.pathfinding_save_state['goals'] = goals
+					self.pathfinding_save_state['goal'] = goal
+					self.pathfinding_save_state['start'] = start
+					self.pathfinding_save_state['closed_set'] = closed_set
+					self.pathfinding_save_state['bridge'] = bridge
 					break
 				f, _, current = heapq.heappop(open_set)
 				#this is our exit condition
@@ -305,7 +307,7 @@ class BuilderBot(Bot):
 								# add a cost if we need to build over enemy buildings
 								extra_cost +=1
 							#add a cost for building a bridge instead of a conveyor
-							if current.distance_squared(neighbour)>1:
+							if not rough_estimate and current.distance_squared(neighbour)>1:
 								extra_cost +=10
 					
 					# if self.check_bit(self.units_adjacent_board, neighbour):
@@ -351,14 +353,14 @@ class BuilderBot(Bot):
 			return self.reconstruct_path(came_from, best_goal_pos)
 		
 		# No path found, set the pathfinding interrupted flag:
-		if not bridge:
-			if out_of_time:
-				print('Pathfinding was interrupted, will resume next turn')
-				self.pathfinding_interrupted = True
-			else:
-				#there is just no path to that point
-				print("No path exists")
-				self.task_complete(ct)
+
+		if out_of_time:
+			print('Pathfinding was interrupted, will resume next turn')
+			self.pathfinding_interrupted = True
+		elif not bridge:
+			#there is just no path to that point
+			print("No path exists")
+			self.task_complete(ct)
 		return None
 
 	def positions_in_radius(self, pos:Position,radius_sq:float):
@@ -429,7 +431,7 @@ class BuilderBot(Bot):
 			print('start collided bridge', goal)
 			self.reset_path()
 			return False
-		result = self.ara(ct, start, goal, 900, True)
+		result = self.ara(ct, start, goal, min(900, 1800-ct.get_cpu_time_elapsed()), True)
 		if result is None:
 			self.reset_bridge_path()
 			return False
@@ -535,17 +537,29 @@ class BuilderBot(Bot):
 		if self.pathfinding_interrupted:
 			self.pathfinding_interrupted = False
 			
-			
 			self.pathfinding_save_state['time_out']-=1
 			if self.pathfinding_save_state['time_out'] == 0:
-				print("A star failed to find a path in time, do bug pathfinding")
-				self.do_bug_pathfinding=True
+				
+				if self.pathfinding_save_state['bridge']:
+					print('A star failed to build a bridge, abandon')
+					self.task['timeout'] = ct.get_current_round()+25
+					self.invalid_tasks.append(self.task)
+					self.task_complete(ct)
+				else:
+					print("A star failed to find a path in time, do bug pathfinding")
+					self.do_bug_pathfinding=True
 			else:
 				#doesn't matter what arguments we put in for goal and start, as we are recovering the state from the saved one anyway
 				result = self.ara(ct, Position(0,0), Position(0,0), 1000, from_save_state=True)
 				if result:
-					self.path = result
-					self.path_index = 0
+					if self.pathfinding_save_state['bridge']:
+						self.bridge_path = [self.pathfinding_save_state['start']] + result
+						self.change_target(self.bridge_path[0], 2)
+						self.bridge_path_index = 0
+						self.known_bridges_at_path_construction = self.team_conveyors_board|self.enemy_conveyors_board
+					else:
+						self.path = result
+						self.path_index = 0
 			
 		task_time = ct.get_cpu_time_elapsed()
 		keep_processing_tasks = True
@@ -631,8 +645,9 @@ class BuilderBot(Bot):
 				else:
 					print('Task was not interrupted')
 		if self.task['type'] not in ESSENTIAL_TASKS and ct.get_global_resources()[0]<ct.get_gunner_cost()[0]*1.5:
-			print('Task processing paused: not enough money to defend')
-			return False
+			if not (self.task['type'] == BuilderTask.BUILD_BRIDGE and self.num_feeding_core<3):
+				print('Task processing paused: not enough money to defend')
+				return False
 		print(f'Task: {self.task['type']}, Data: {self.task['data']}, P: {self.phase}')
 		current_pos = ct.get_position()
 		reached_target = not self.target is None and current_pos.distance_squared(self.target) <=self.target_radius_sq
@@ -641,9 +656,6 @@ class BuilderBot(Bot):
 
 	def task_complete(self, ct:Controller):
 		self.end_task()
-		if not self.first_bridge_built and self.task['type'] == BuilderTask.BUILD_BRIDGE:
-			self.first_bridge_built = True
-			ESSENTIAL_TASKS.remove(BuilderTask.BUILD_BRIDGE)
 		super().task_complete(ct)
 		self.add_task(ct,BuilderTask.FIND_ORE, None, True)
 

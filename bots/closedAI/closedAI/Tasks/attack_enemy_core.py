@@ -39,7 +39,7 @@ def is_valid(self:BuilderBot,ct:Controller, task:TaskData):
 		return False
 	for d in DIRECTIONS:
 		check_pos = self.enemy_core_pos.add(d).add(d)
-		if self.check_bit(self.connected_region,check_pos):
+		if self.is_valid_position(check_pos) and self.check_bit(self.connected_region,check_pos):
 			return True
 	return False
 

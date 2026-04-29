@@ -103,7 +103,7 @@ def is_valid(self:BuilderBot,ct:Controller, task:TaskData)->bool:
 		return False
 	for p in self.conveyors_pointing_into[task['data']]:
 		for id in self.conveyor_ids[p]:
-			if self.conveyor_lines[id]['harvesters']:
+			if self.conveyor_lines[id]['ti_harvesters']:
 				return True
 			break
 	for d in CARDINAL_DIRECTIONS:
