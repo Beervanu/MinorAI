@@ -22,6 +22,7 @@ def next_unbuilt_sentinel(self: DefenderBot, ct:Controller, reached_target: bool
 		self.phase+=1
 		return True
 	self.task_complete(ct)
+	self.checking_walls = False
 	return True
 
 	
