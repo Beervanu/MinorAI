@@ -402,7 +402,7 @@ class BuilderBot(Bot):
 			result = self.bug_path_find(ct,start,goal, self.target_radius_sq)
 			print(f'Took {ct.get_cpu_time_elapsed()-t}')
 		else:
-			result = self.ara(ct, start, goal, 1300, False)
+			result = self.ara(ct, start, goal, (1500-ct.get_cpu_time_elapsed()), False)
 			if result is None:
 				self.reset_path()
 				return False

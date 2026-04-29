@@ -585,7 +585,7 @@ class Bot:
 		print(f'Updating environment took {ct.get_cpu_time_elapsed()-t}μs')
 		t= ct.get_cpu_time_elapsed()
 		harvester_positions:list[Position] = []
-		conveyors_added = False
+		conveyors_changed = False
 		#then update buildings
 		for pos in ct.get_nearby_tiles():
 			pos_bitmask = self.get_bitmask(pos)
@@ -642,7 +642,7 @@ class Bot:
 						self.conveyor_broken(ct, pos)
 
 					if not self.conveyor_ids[pos]:
-						conveyors_added=True
+						conveyors_changed=True
 						self.add_conveyor(pos, points_to)
 
 				#if there used to be a conveyor but it has been broken now
@@ -689,6 +689,7 @@ class Bot:
 						elif etype in TURRET_ENTITIES:
 							self.add_task(ct,BuilderTask.CUTOFF_ENEMY_TURRET, pos)
 			elif self.conveyor_ids[pos]:
+				conveyors_changed = True
 				self.conveyor_broken(ct, pos)
 
 		if is_builder_bot:
@@ -713,7 +714,7 @@ class Bot:
 		print(f'Updating buildings took {ct.get_cpu_time_elapsed()-t}μs')
 		t=ct.get_cpu_time_elapsed()
 		# we want to cutoff enemy lines that feed enemy buildings
-		if conveyors_added and is_builder_bot:
+		if conveyors_changed and is_builder_bot:
 			
 			self.num_feeding_core = 0
 			found_ids:set[int] = set()
@@ -788,7 +789,7 @@ class Bot:
 		# 	if self.conveyor_ids[i]:
 		# 		print(i.x, i.y, self.conveyor_ids[i])
 		if ct.get_cpu_time_elapsed()>2000:
-			eprint('Lagging, Round:', ct.get_current_round(), 'Team: ', self.team,'ID: ', self.id)
+			eprint('Lagging, R:', ct.get_current_round(), 'T: ', self.team,'ID: ', self.id, 't: ', ct.get_cpu_time_elapsed())
 
 	def get_task_identifier(self, task:Task, data:Any):
 		identifier = 0

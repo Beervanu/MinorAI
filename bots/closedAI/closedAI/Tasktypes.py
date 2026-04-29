@@ -12,6 +12,7 @@ class BuilderTask(IntEnum):
 	HEAL = 7
 	CUTOFF_ENEMY_LINES=8
 	BUILD_CORE_DEFENCE = 9
+	REFINE_AXIONITE = 10
 
 
 type Task = BuilderTask 
