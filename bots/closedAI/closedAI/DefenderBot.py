@@ -47,7 +47,7 @@ class DefenderBot(BuilderBot):
 		
 		self.marker_info.core_x = self.core_pos.x
 		self.marker_info.core_y = self.core_pos.y
-
+		self.checking_walls = False
 		self.add_task(ct, BuilderTask.BUILD_CORE_DEFENCE, {'wall_counter':0, 'build_wall_override':False})
 	
 	def turn_end(self, ct:Controller):
@@ -59,3 +59,19 @@ class DefenderBot(BuilderBot):
 				check_pos = Position(current_pos.x+x, current_pos.y+y)
 				if ct.can_place_marker(check_pos):
 					ct.place_marker(check_pos, self.marker_info.as_int)
+
+	def find_broken_defences(self,ct:Controller):
+		# Check for broken walls 
+		visible_walls = self.defence_walls_board & self.seen_this_round_board
+
+		missing_walls = visible_walls & ~self.team_buildings_board
+
+		if missing_walls and not self.checking_walls:
+			self.add_task(ct, BuilderTask.BUILD_CORE_DEFENCE, {'wall_counter':0, 'build_wall_override':True})
+			self.checking_walls = True
+
+	def turn_start(self, ct: Controller):
+		super().turn_start(ct)
+
+		if self.defence_walls_board:
+			self.find_broken_defences(ct)
