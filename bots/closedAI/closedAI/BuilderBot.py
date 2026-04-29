@@ -15,6 +15,7 @@ class BuilderBot(Bot):
 		
 		
 		super().__init__(ct, EntityType.BUILDER_BOT)
+		self.protected_area = 0
 		self.core_pos = core_pos
 		for d in Direction:
 			self.core_mask = self.set_bit(self.core_mask, self.core_pos.add(d))
@@ -78,6 +79,23 @@ class BuilderBot(Bot):
 				if self.check_bit(self.walls_board, pos):
 					continue
 				board = self.set_bit(board, pos)
+		self.protected_area = self.generate_mask([0b11111111111]*11)
+		h_shift = self.core_pos.x-5
+		if h_shift>0:
+			for i in range(h_shift):
+				self.protected_area = ((self.protected_area)<<1)&self.inverted_left_mask
+		elif h_shift<0:
+			for i in range(-h_shift):
+				self.protected_area = ((self.protected_area)>>1)&self.inverted_right_mask
+		v_shift = self.core_pos.y-5
+
+		if v_shift>0:
+			for i in range(v_shift):
+				self.protected_area = ((self.protected_area)<<self.map_width)
+		elif h_shift<0:
+			for i in range(-h_shift):
+				self.protected_area = ((self.protected_area)>>self.map_width)
+		self.protected_area&=self.max_int
 		return board
 
 	def get_task_secondary_priority(self, ct: Controller, task: TaskData):
