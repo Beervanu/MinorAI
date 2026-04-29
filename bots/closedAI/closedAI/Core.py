@@ -13,7 +13,7 @@ class Core(Bot):
 	def turn_start(self, ct: Controller):
 		super().turn_start(ct)
 		round = ct.get_current_round()
-		if round>=15 and not self.spawned_defender_bot:
+		if round>=5 and not self.spawned_defender_bot:
 			spawn_pos = ct.get_position()
 			if ct.can_spawn(spawn_pos):
 				ct.spawn_builder(spawn_pos)

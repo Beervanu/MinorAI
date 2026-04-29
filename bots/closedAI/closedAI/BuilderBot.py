@@ -207,14 +207,14 @@ class BuilderBot(Bot):
 		target_radius_sq = 0 if bridge else self.target_radius_sq
 		best_goal_score = float('inf')
 		best_goal_pos = None
-		weight = 2.5
+		weight:float = 2.5
 		if not from_save_state:
 			# can happen occasionally
 			if start.distance_squared(goal) <= target_radius_sq:
 				print("already at target")
 				return None
-			counter = 0 
-			open_set = []
+			counter:int = 0 
+			open_set:list[tuple[float, int, Position]] = []
 			inconsistent_set = []
 			heapq.heappush(open_set, (0, counter, start))
 			came_from = {}
@@ -274,9 +274,14 @@ class BuilderBot(Bot):
 					extra_cost = 0
 					if not bridge and not self.check_bit(self.team_buildings_board| self.enemy_buildings_board, neighbour):
 						extra_cost += 0.5
-					elif self.check_bit(self.enemy_buildings_board, neighbour):
-						# add a cost if we need to build over enemy buildings
-						extra_cost +=1
+					if bridge:
+						if self.check_bit(self.enemy_buildings_board, neighbour):
+							# add a cost if we need to build over enemy buildings
+							extra_cost +=1
+						#add a cost for building a bridge instead of a conveyor
+						if current.distance_squared(neighbour)>1:
+							extra_cost +=10
+					
 					# if self.check_bit(self.units_adjacent_board, neighbour):
 					# 	extra_cost+=1
 					tentative_g = g_score[current] + 1 +extra_cost
@@ -394,8 +399,8 @@ class BuilderBot(Bot):
 		Runs A* and stores the result as noth a position list and a path bitboard.
 		"""
 		#check if there are actually any points we can pathfind to
-		if not self.check_bit(self.walkable_board|(~self.seen_board), goal):
-			print('start collided bridge')
+		if not self.check_bit(self.walkable_board|(~self.seen_board)|self.units_board, goal):
+			print('start collided bridge', goal)
 			self.reset_path()
 			return False
 		result = self.ara(ct, start, goal, 700, True)

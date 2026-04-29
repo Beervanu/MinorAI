@@ -117,10 +117,11 @@ class Bot:
 	def closest_in_board(self, board:int, pos:Position):
 		check_board = self.get_bitmask(pos)
 		while not check_board&board:
-			check_board |= (check_board<<1)&self.inverted_left_mask
-			check_board |= (check_board>>1)&self.inverted_right_mask
-			check_board |= (check_board>>self.map_width)
-			check_board |= (check_board<<self.map_width)
+			orig_check_board = check_board
+			check_board |= (orig_check_board<<1)&self.inverted_left_mask
+			check_board |= (orig_check_board>>1)&self.inverted_right_mask
+			check_board |= (orig_check_board>>self.map_width)
+			check_board |= (orig_check_board<<self.map_width)
 		return self.pop_lsb(check_board&board)[1]
 
 	def generate_mask(self, arr: list[int])->int:
