@@ -32,6 +32,11 @@ def generate_path(self: BuilderBot, ct:Controller, reached_target: bool):
 		elif self.bridge_path and not self.check_path_collisions(self.bridge_path, self.bridge_path_index, True):
 			pass
 		elif self.check_bit(self.team_conveyors_board|(~self.walkable_board), bridge_start):
+			if self.task['data']['to_feed'] and not self.bridge_path and self.check_bit(self.team_conveyors_board, bridge_start):
+				#attack the bridge there and redirect this line
+				self.change_target(bridge_start)
+				self.phase = 3
+				return True
 			# if we have a collision directly in front of us and its not a unit, panic and complete task
 			if self.bridge_path_index>0:
 				
@@ -241,14 +246,24 @@ def build_conveyors(self:BuilderBot, ct:Controller, reached_target:bool):
 			self.change_target(build_at, 0)
 			self.phase=3
 			return True
+	ghost_build=False
 	if ct.get_action_cooldown() == 0 and ct.get_move_cooldown()==0:
 		
 		etype = ct.get_entity_type(building_id)
-		if ct.can_destroy(build_at) and etype in [EntityType.ROAD, EntityType.MARKER]:
-			ct.destroy(build_at)
+		if ct.can_destroy(build_at):
+			if etype in [EntityType.ROAD, EntityType.MARKER]:
+				ct.destroy(build_at)
+			elif etype in CONVEYOR_ENTITIES:
+				if self.conveyor_pointing_to[build_at] == self.conveyor_path[1]:
+					ghost_build = True
+				else:
+					ct.destroy(build_at)
+
+
 		
-		if ct.can_build_conveyor(build_at, build_to):
-			ct.build_conveyor(build_at, build_to)
+		if ct.can_build_conveyor(build_at, build_to) or ghost_build:
+			if not ghost_build:
+				ct.build_conveyor(build_at, build_to)
 			#move onto where we just built
 			if current_pos != build_at:
 				m_dir = current_pos.direction_to(build_at)
