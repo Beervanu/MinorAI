@@ -3,7 +3,7 @@ import importlib
 from ..Tasktypes import Task
 builder_tasks:dict[Task, dict] = {}
 DO_ONCE_TASKS = []
-for module_name in ['find_ore', 'found_ore', 'build_bridge', 'attack_enemy_core', 'place_sentinel', 'find_enemy_core', 'cutoff_enemy_turret', 'heal', 'build_core_defense', 'cutoff_enemy_lines', 'refine_axionite']:
+for module_name in ['find_ore', 'found_ore', 'build_bridge', 'attack_enemy_core', 'place_sentinel', 'find_enemy_core', 'cutoff_enemy_turret', 'heal', 'build_core_defense', 'cutoff_enemy_lines', 'refine_axionite', 'get_rid_of_intruders']:
 	module = importlib.import_module(f'.{module_name}', 'closedAI.Tasks')
 	if not hasattr(module, 'is_valid'):
 		is_v = lambda x,y,z: True

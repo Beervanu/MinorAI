@@ -34,12 +34,12 @@ def next_unbuilt_defence_tile(self: DefenderBot, ct: Controller, template_board:
 def pick_wall_target(self: DefenderBot, ct: Controller, reached_target: bool):
 	"""Find the nearest unbuilt wall tile and target it."""
 	target_pos = next_unbuilt_defence_tile(self, ct, self.defence_walls_board)
-
 	if target_pos is None:
 		#if we are blocked by a unit
 		if self.defence_walls_board & self.units_board:
 			return False
 		# All walls built and launchers handled - task complete
+		self.add_task(ct, BuilderTask.GET_RID_OF_INTRUDERS, data={'alternative_pos': []})
 		self.task_complete(ct)
 		return True
 
@@ -55,8 +55,14 @@ def build_wall(self: DefenderBot, ct: Controller, reached_target: bool):
 			if self.defence_walls_board & self.units_board:
 				return False
 			# All walls built and launchers handled - task complete
+			self.add_task(ct, BuilderTask.GET_RID_OF_INTRUDERS, data={'alternative_pos': []})
+			eprint('Finished building walls, moving on to intruders')
 			self.task_complete(ct)
 			return True
+		elif not self.check_bit(self.connected_region, target_pos):
+			self.phase = phases.index(pick_wall_target)
+			return True
+		
 		curr_pos = ct.get_position()
 		new_target_dist = curr_pos.distance_squared(target_pos)
 		if new_target_dist<curr_pos.distance_squared(self.target):
@@ -194,6 +200,14 @@ def convert_to_launcher_pocket(self: DefenderBot, ct: Controller):
 	return True
 
 def build_launcher(self: DefenderBot, ct: Controller, reached_target: bool):
+	# If a launcher already exists at this position (from a previous run), just mark the pocket and move on without rebuilding
+	target_bitmask = self.get_bitmask(self.target)
+	if self.team_buildings_board & target_bitmask:
+		b_id = ct.get_tile_building_id(self.target)
+		if b_id and ct.get_entity_type(b_id) == EntityType.LAUNCHER:
+			convert_to_launcher_pocket(self, ct)
+			return True
+		
 	if reached_target:
 		target_bitmask = self.get_bitmask(self.target)
 		if ct.get_action_cooldown() == 0:
