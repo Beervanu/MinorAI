@@ -71,6 +71,7 @@ def generate_path(self: BuilderBot, ct:Controller, reached_target: bool):
 	self.compute_bridge_path(ct, bridge_start, goal)
 	#if there is no path from this start we just abandon this harvester
 	if not self.bridge_path:
+		print('abandoned', bridge_start, goal)
 		self.task['timeout'] = ct.get_current_round()+25
 		self.invalid_tasks.append(self.task)
 		self.task_complete(ct)

@@ -403,7 +403,7 @@ class BuilderBot(Bot):
 			print('start collided bridge', goal)
 			self.reset_path()
 			return False
-		result = self.ara(ct, start, goal, 700, True)
+		result = self.ara(ct, start, goal, 900, True)
 		if result is None:
 			self.reset_bridge_path()
 			return False
