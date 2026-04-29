@@ -194,6 +194,14 @@ def convert_to_launcher_pocket(self: DefenderBot, ct: Controller):
 	return True
 
 def build_launcher(self: DefenderBot, ct: Controller, reached_target: bool):
+	# If a launcher already exists at this position (from a previous run), just mark the pocket and move on without rebuilding
+	target_bitmask = self.get_bitmask(self.target)
+	if self.team_buildings_board & target_bitmask:
+		b_id = ct.get_tile_building_id(self.target)
+		if b_id and ct.get_entity_type(b_id) == EntityType.LAUNCHER:
+			convert_to_launcher_pocket(self, ct)
+			return True
+		
 	if reached_target:
 		target_bitmask = self.get_bitmask(self.target)
 		if ct.get_action_cooldown() == 0:
