@@ -200,7 +200,7 @@ class BuilderBot(Bot):
 		neighbour_bit_mask >>= self.map_width*3 + 3
 
 
-		neighbours = neighbour_bit_mask & (goal_bitmask | ~(self.get_full_lines_board(round)))
+		neighbours = neighbour_bit_mask & (goal_bitmask | ~(self.get_full_lines_board(round) |self.core_mask))
 		neighbours &= (self.walkable_board|(~self.seen_board)|self.conveyor_targets_board)  & ~(self.axionite_ores_board | self.titanium_ores_board | self.defence_walls_board)
 		neighbours &= self.connected_region
 		if ids:= self.conveyor_ids[pos]:
@@ -468,6 +468,7 @@ class BuilderBot(Bot):
 			mask |= self.titanium_ores_board | self.axionite_ores_board | self.defence_walls_board
 			#don't want to build onto our own conveyors, that we didn't know about at path construction
 			mask |= self.team_conveyors_board & (~self.known_bridges_at_path_construction)
+			mask |= self.core_mask
 			#eprint(remaining_board&self.team_conveyors_board, remaining_board&(self.titanium_ores_board | self.axionite_ores_board), remaining_board&(~self.walkable_board & self.seen_board))
 		return (remaining_board & mask)
 

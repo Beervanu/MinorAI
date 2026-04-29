@@ -84,6 +84,15 @@ def build_sentinel(self: DefenderBot, ct:Controller, reached_target: bool):
 
 				if ct.can_build_sentinel(self.target, sent_direction):
 					ct.build_sentinel(self.target, sent_direction)
+					bitb=0
+					for id in self.conveyor_lines:
+						conveyor_info = self.conveyor_lines[id]
+						if conveyor_info['ti_harvesters']:
+							bitb|=conveyor_info['bitboard']
+					if bitb:
+						closest = self.closest_in_board(bitb, self.target)
+						self.add_task(ct, BuilderTask.BUILD_BRIDGE, {'start':closest, 'to_feed': self.target})
+		
 					self.phase-=1
 					return True
 

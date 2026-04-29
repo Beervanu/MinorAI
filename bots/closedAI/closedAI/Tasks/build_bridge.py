@@ -153,9 +153,10 @@ def choose_bridge_type(self:BuilderBot, ct:Controller, reached_target:bool):
 						y_dir = Direction.SOUTH
 					case -1:
 						y_dir = Direction.NORTH
-			buildable_board = self.walkable_board & ~(self.axionite_ores_board|self.titanium_ores_board|self.defence_walls_board|self.team_conveyors_board) 
+			buildable_board = self.walkable_board & ~(self.axionite_ores_board|self.titanium_ores_board|self.defence_walls_board|self.team_conveyors_board|self.core_mask) 
 			buildable_board |= self.known_bridges_at_path_construction
 			buildable_board |= self.get_bitmask(next_bridge_point)
+
 			current_pos = self.target
 			self.conveyor_path = [self.target]
 			for i in range(self.chebyshev(next_bridge_point, self.target)):

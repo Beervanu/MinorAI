@@ -26,7 +26,7 @@ def choose_foundry_pos(self: BuilderBot, ct:Controller, reached_target: bool):
 	
 	for splitter_pos in reversed(downstream_ax):
 		fed_by_set = self.conveyors_pointing_into[splitter_pos].intersection(downstream_ax)
-		fed_by:Position
+		fed_by:Position |None= None
 		if fed_by_set:
 			fed_by = fed_by_set.pop()
 		else:
@@ -52,6 +52,8 @@ def choose_foundry_pos(self: BuilderBot, ct:Controller, reached_target: bool):
 			continue
 		
 		for foundry_pos in free_dirs:
+			if self.check_bit(self.core_mask, foundry_pos):
+				continue
 			for d in CARDINAL_DIRECTIONS:
 				
 				foundry_out = foundry_pos.add(d)
@@ -80,14 +82,14 @@ def choose_foundry_pos(self: BuilderBot, ct:Controller, reached_target: bool):
 						self.add_task(ct, BuilderTask.BUILD_BRIDGE, {'start':foundry_out, 'to_feed':None})
 					destroyed_conveyor_points_to =self.conveyor_pointing_to[splitter_pos]
 					# connect splitter to core 
-					if destroyed_conveyor_points_to== foundry_pos or destroyed_conveyor_points_to.distance_squared(splitter_pos) > 1: # type: ignore
-						for i in free_dirs:
-							if i ==foundry_pos:
-								continue
-							splitter_out = i
-							break
+					for i in free_dirs:
+						if i ==foundry_pos:
+							continue
+						splitter_out = i
+						break
+					if destroyed_conveyor_points_to and (destroyed_conveyor_points_to== foundry_pos or destroyed_conveyor_points_to.distance_squared(splitter_pos) > 1): # type: ignore
 						self.add_task(ct, BuilderTask.BUILD_BRIDGE, {'start':splitter_out, 'to_feed':None})
-					
+
 					
 						
 
@@ -161,7 +163,7 @@ def build_splitter(self: BuilderBot, ct:Controller, reached_target: bool):
 def build_foundry(self: BuilderBot, ct:Controller, reached_target: bool):
 	if ct.is_in_vision(self.target):
 		if not self.check_bit(self.walkable_board, self.target):
-			self.phase-=1
+			self.phase=0
 			return True
 	
 	if reached_target:
