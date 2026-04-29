@@ -10,3 +10,6 @@ __pycache__/
 venv/
 env/
 .vscode/
+
+#test bot
+bots/test

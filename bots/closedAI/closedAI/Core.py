@@ -8,14 +8,16 @@ class Core(Bot):
 		self.spawn_d = Direction.NORTH
 		self.spawned_defense = 0
 		self.spawn_defense = False
+		self.spawned_defender_bot = False
 
 	def turn_start(self, ct: Controller):
 		super().turn_start(ct)
 		round = ct.get_current_round()
-		if round==1:
-			spawn_pos = ct.get_position().add(self.spawn_d)
+		if round>=15 and not self.spawned_defender_bot:
+			spawn_pos = ct.get_position()
 			if ct.can_spawn(spawn_pos):
 				ct.spawn_builder(spawn_pos)
+				self.spawned_defender_bot = True
 			return 
 		if self.num_spawned < 2 or (self.num_spawned<4 and round>15):
 

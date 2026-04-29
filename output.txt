@@ -1,0 +1,25 @@
+Qd Task no. 1: <BuilderTask.FOUND_TI_ORE: 2>, Data: Position(x=1, y=23)
+Qd Task no. 2: <BuilderTask.FIND_ORE: 0>, Data: None
+Updating terrain vision
+Updating environment took 94μs
+Updating buildings took 204μs
+Calculating enemy line cutoff points took 14μs
+Updating connected region took 42μs
+Map Symmetry: unknown
+Before processing tasks 390 micros
+Task: <BuilderTask.BUILD_BRIDGE: 1>, Data: Position(x=5, y=26), P: 2
+Task took 35μs
+No target/pathfinding off
+Task: <BuilderTask.BUILD_BRIDGE: 1>, Data: Position(x=5, y=26), P: 1
+Task took 18μs
+No target/pathfinding off
+Task: <BuilderTask.BUILD_BRIDGE: 1>, Data: Position(x=5, y=26), P: 0
+already a path
+New Task: <BuilderTask.FOUND_TI_ORE: 2>, Data: Position(x=1, y=23), I: 1
+Task already done or added:  <BuilderTask.FIND_ORE: 0>
+Task took 49μs
+No target/pathfinding off
+Task was not interrupted
+Task processing paused: not enough money to defend
+Task took 7μs
+No target/pathfinding off

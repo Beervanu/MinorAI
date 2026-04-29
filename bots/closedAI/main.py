@@ -15,6 +15,7 @@ class Player:
 
 	def run(self, ct: Controller) -> None:
 		if self.first_turn:
+			self.first_turn = False
 			etype = ct.get_entity_type()
 			if etype == EntityType.CORE:
 				self.bot = Core(ct)
@@ -25,14 +26,12 @@ class Player:
 				for uID in ct.get_nearby_units():
 					if ct.get_entity_type(uID) == EntityType.CORE:
 						core_pos = ct.get_position(uID)
+						if core_pos==ct.get_position():
+							self.bot = DefenderBot(ct, core_pos, move_dir)
+							return
 						move_dir = ct.get_position().direction_to(core_pos).opposite()
 						break
-				
-				# First bot of the game becomes the defender, the rest are explorers
-				if ct.get_current_round() == 1:
-					self.bot = DefenderBot(ct, core_pos, move_dir)
-				else:
-					self.bot = ExplorerBot(ct, core_pos, move_dir)
+				self.bot = ExplorerBot(ct, core_pos, move_dir)
 			elif etype == EntityType.SENTINEL:
 				self.bot = SentinelBot(ct)
 			elif etype == EntityType.GUNNER:
@@ -40,7 +39,7 @@ class Player:
 			elif etype == EntityType.LAUNCHER:
 				self.bot = LauncherBot(ct)
 			
-			self.first_turn = False
+			
         
 		self.bot.turn_start(ct)
 		self.bot.turn_end(ct)

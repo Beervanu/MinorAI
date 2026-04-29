@@ -70,6 +70,7 @@ def build_wall(self: DefenderBot, ct: Controller, reached_target: bool):
 	
 	# skip if this position is reserved for the launcher pocket
 	if self.check_bit(self.launcher_pocket_board, self.target):
+		
 		# This tile must remain empty - move to next wall
 		self.defence_walls_board = self.clear_bit(self.defence_walls_board, self.target)
 		self.phase = phases.index(pick_wall_target)
@@ -116,6 +117,7 @@ def build_wall(self: DefenderBot, ct: Controller, reached_target: bool):
 					return False
 
 			if ct.can_build_barrier(self.target):
+
 				# Region check: simulate placing the wall
 				current_region = self.update_region(self.walkable_board, self_pos)
 				simulated_walkable = self.walkable_board & ~target_bitmask
@@ -124,16 +126,14 @@ def build_wall(self: DefenderBot, ct: Controller, reached_target: bool):
 				# Tiles that were reachable but now aren't - excluding the target itself
 				lost_tiles = current_region & ~simulated_region & ~target_bitmask
 				
-				if lost_tiles != 0 or self.task['data']['wall_counter']>=12 and not self.task['data']['build_wall_override']:
+				if (lost_tiles != 0 or self.task['data']['wall_counter']>=12) and not self.task['data']['build_wall_override']:
 					convert_to_launcher_pocket(self, ct)
 					return True	
-				
-				if ct.can_build_barrier(self.target):
-					self.task['data']['wall_counter']+=1
-					self.task['data']['build_wall_override'] = False
-					ct.build_barrier(self.target)
-					self.phase = phases.index(pick_wall_target)
-					return False
+				self.task['data']['wall_counter']+=1
+				self.task['data']['build_wall_override'] = False
+				ct.build_barrier(self.target)
+				self.phase = phases.index(pick_wall_target)
+				return False
 		return False
 
 def snap_to_cardinal(dx, dy) -> Direction:
@@ -158,14 +158,14 @@ def convert_to_launcher_pocket(self: DefenderBot, ct: Controller):
 			return False
 			
 	# Reserve the gap, the launcher tile, and the two flanking tiles
-	
+	new_launcher_board = self.launcher_pocket_board
 	flank_free = False
 	# Flanks are perpendicular to the inward axis (90 degree rotations)
 	for flank_dir in (inward.rotate_left().rotate_left(), inward.rotate_right().rotate_right()):
 		flank_pos = launcher_pos.add(flank_dir)
 		if self.is_valid_position(flank_pos) and self.check_bit(self.walkable_board, flank_pos):
 			flank_free = True
-			self.launcher_pocket_board = self.set_bit(self.launcher_pocket_board, flank_pos)
+			new_launcher_board = self.set_bit(new_launcher_board, flank_pos)
 			self.defence_walls_board = self.clear_bit(self.defence_walls_board, flank_pos)
 	if not flank_free:
 		#retry with a different launcher position
@@ -177,15 +177,15 @@ def convert_to_launcher_pocket(self: DefenderBot, ct: Controller):
 			flank_pos = launcher_pos.add(flank_dir)
 			if self.is_valid_position(flank_pos) and self.check_bit(self.walkable_board, flank_pos):
 				flank_free = True
-				self.launcher_pocket_board = self.set_bit(self.launcher_pocket_board, flank_pos)
+				new_launcher_board = self.set_bit(new_launcher_board, flank_pos)
 				self.defence_walls_board = self.clear_bit(self.defence_walls_board, flank_pos)
 		#if its still not free just build a wall
 		if not flank_free:
 			self.task['data']['build_wall_override']=True
 			return False
-	self.launcher_pocket_board = self.set_bit(self.launcher_pocket_board, self.target)
-	self.launcher_pocket_board = self.set_bit(self.launcher_pocket_board, launcher_pos)
-
+	new_launcher_board = self.set_bit(new_launcher_board, self.target)
+	new_launcher_board = self.set_bit(new_launcher_board, launcher_pos)
+	self.launcher_pocket_board = new_launcher_board
 
 
 	# Queue the launcher build immediately - switch target to the launcher tile

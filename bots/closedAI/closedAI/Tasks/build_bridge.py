@@ -29,10 +29,12 @@ def generate_path(self: BuilderBot, ct:Controller, reached_target: bool):
 			#wait it out
 			self.do_pathfinding = False
 			return False
-		elif not self.check_bit(self.walkable_board, bridge_start) or self.check_bit(self.team_conveyors_board, bridge_start):
+		elif self.bridge_path and not self.check_path_collisions(self.bridge_path, self.bridge_path_index, True):
+			pass
+		elif self.check_bit(self.team_conveyors_board|(~self.walkable_board), bridge_start):
 			# if we have a collision directly in front of us and its not a unit, panic and complete task
-			# TODO: destroy the previously made path and reconstruct around obstacle
-			print('already a path')
+			if self.bridge_path_index>0:
+				self.add_task(ct, BuilderTask.BUILD_BRIDGE, self.bridge_path[self.bridge_path_index-1])
 			self.task_complete(ct)
 			return True
 		
@@ -85,7 +87,11 @@ def choose_bridge_type(self:BuilderBot, ct:Controller, reached_target:bool):
 					# is the next bridge point downstream of this conveyor - if so go to the next bridge point
 					if next_bridge_point in self.conveyor_lines[id]['positions'][i+1:]:
 						self.bridge_path_index+=1
+						if self.bridge_path_index == len(self.bridge_path)-1:
+							self.task_complete(ct)
+							return True
 						self.change_target(self.bridge_path[self.bridge_path_index])
+
 						return True
 					break
 		#get rid of roads/markers in the way
@@ -126,8 +132,8 @@ def choose_bridge_type(self:BuilderBot, ct:Controller, reached_target:bool):
 						y_dir = Direction.SOUTH
 					case -1:
 						y_dir = Direction.NORTH
-			#if we are going diagonal, skip building conveyors and just use a bridge
-			buildable_board = self.walkable_board & ~(self.axionite_ores_board|self.titanium_ores_board|self.team_conveyors_board) 
+			buildable_board = self.walkable_board & ~(self.axionite_ores_board|self.titanium_ores_board|self.defence_walls_board|self.team_conveyors_board) 
+			buildable_board |= self.known_bridges_at_path_construction
 			buildable_board |= self.get_bitmask(next_bridge_point)
 			current_pos = self.target
 			self.conveyor_path = [self.target]
@@ -163,8 +169,6 @@ def choose_bridge_type(self:BuilderBot, ct:Controller, reached_target:bool):
 
 				#if we have finished building the bridge
 				if self.bridge_path_index == len(self.bridge_path)-1:
-					
-					#TODO: spawn a protector bot?
 					self.task_complete(ct)
 					return True
 				self.change_target(self.bridge_path[self.bridge_path_index], 2)

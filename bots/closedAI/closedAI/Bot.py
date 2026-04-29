@@ -687,24 +687,25 @@ class Bot:
 			elif self.conveyor_ids[pos]:
 				self.conveyor_broken(ct, pos)
 
-		#build conveyors from harvesters
-		for p in harvester_positions:
-			# check no one else has already built a conveyor from this ore
-			valid_pos = []
+		if is_builder_bot:
+			#build conveyors from harvesters
+			for p in harvester_positions:
+				# check no one else has already built a conveyor from this ore
+				valid_pos = []
 
-			for dir in CARDINAL_DIRECTIONS:
-				check_pos = p.add(dir)
-				if not self.is_valid_position(check_pos):
-					continue
-				if self.check_bit(self.team_conveyors_board, check_pos):
-					valid_pos = []
-					break
-				valid_pos.append(check_pos)
-			valid_pos.sort(key=lambda po: self.chebyshev(self.core_pos, po))
-			for pos in valid_pos:
-				if self.check_bit(self.walkable_board, pos) and not self.check_bit(self.axionite_ores_board|self.titanium_ores_board, pos):
-					self.add_task(ct,BuilderTask.BUILD_BRIDGE, (pos), False)
-					break
+				for dir in CARDINAL_DIRECTIONS:
+					check_pos = p.add(dir)
+					if not self.is_valid_position(check_pos):
+						continue
+					if self.check_bit(self.team_conveyors_board, check_pos):
+						valid_pos = []
+						break
+					valid_pos.append(check_pos)
+				valid_pos.sort(key=lambda po: self.chebyshev(self.core_pos, po))
+				for pos in valid_pos:
+					if self.check_bit(self.walkable_board, pos) and not self.check_bit(self.axionite_ores_board|self.titanium_ores_board|self.defence_walls_board, pos): # type: ignore
+						self.add_task(ct,BuilderTask.BUILD_BRIDGE, (pos), False)
+						break
 		print(f'Updating buildings took {ct.get_cpu_time_elapsed()-t}μs')
 		t=ct.get_cpu_time_elapsed()
 		# we want to cutoff enemy lines that feed enemy buildings

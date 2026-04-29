@@ -17,7 +17,7 @@ class BuilderBot(Bot):
 		super().__init__(ct, EntityType.BUILDER_BOT)
 		self.core_pos = core_pos
 		for d in Direction:
-			self.core_mask = self.set_bit(self.core_mask, self.core_pos)
+			self.core_mask = self.set_bit(self.core_mask, self.core_pos.add(d))
 		self.core_attack_range_mask = 0
 		self.core_attack_range_symmetry_masks = (0,0,0)
 		attack_range = ceil((GameConstants.SENTINEL_VISION_RADIUS_SQ)**0.5)
@@ -557,19 +557,18 @@ class BuilderBot(Bot):
 			# If path is valid follow it
 			if self.path:
 				if self.path_index>0 and self.path_index<=len(self.path):
-					print('valid')
 					if self.path[self.path_index-1] != current_pos:
 						print('got launched')
 						self.compute_path(ct, current_pos, self.target)
 				self.follow_path(ct)
 			else:
-				print('No path to follow??')
+				print('No path to follow.')
 			
 			print (f'Pathfinding took {ct.get_cpu_time_elapsed()-pathfind_time}μs')
 			print(f'Current Target: {self.target}, RadiusSq: {self.target_radius_sq}')
 			print(f"Path: {self.path_string(self.path)}")
-		print(f'Bridge Path: {self.path_string(self.bridge_path)}')
-		print(f'Conveyor Path: {self.path_string(self.conveyor_path)}')
+			print(f'Bridge Path: {self.path_string(self.bridge_path)}')
+			print(f'Conveyor Path: {self.path_string(self.conveyor_path)}')
 		if self.path:
 			self.draw_path(ct, self.path, self.path_index)
 
