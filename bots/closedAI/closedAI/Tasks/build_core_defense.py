@@ -39,7 +39,7 @@ def pick_wall_target(self: DefenderBot, ct: Controller, reached_target: bool):
 		if self.defence_walls_board & self.units_board:
 			return False
 		# All walls built and launchers handled - task complete
-		self.add_task(ct, BuilderTask.GET_RID_OF_INTRUDERS, data=None)
+		self.add_task(ct, BuilderTask.GET_RID_OF_INTRUDERS, data={'alternative_pos': []})
 		self.task_complete(ct)
 		return True
 
@@ -55,7 +55,7 @@ def build_wall(self: DefenderBot, ct: Controller, reached_target: bool):
 			if self.defence_walls_board & self.units_board:
 				return False
 			# All walls built and launchers handled - task complete
-			self.add_task(ct, BuilderTask.GET_RID_OF_INTRUDERS, data=None) 
+			self.add_task(ct, BuilderTask.GET_RID_OF_INTRUDERS, data={'alternative_pos': []})
 			eprint('Finished building walls, moving on to intruders')
 			self.task_complete(ct)
 			return True

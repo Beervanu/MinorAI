@@ -11,18 +11,18 @@ from cambc import Controller, Direction, EntityType, Position
 
 task_type = BuilderTask.GET_RID_OF_INTRUDERS # some BuilderTask
 sent_direction = Direction.WEST
-alternative_pos = []
 
 def next_unbuilt_sentinel(self: DefenderBot, ct:Controller, reached_target: bool):
-	eprint('Finding next sentinel position')
 	global sent_direction
+
 	if self.sentinel_defence_positions:
 		next_target, sent_direction = self.sentinel_defence_positions.pop()
 		self.change_target(next_target)
-		alternative_pos.clear()
+		self.task['data']['alternative_pos'].clear()
 		self.phase+=1
 		return True
-	return False
+	self.task_complete(ct)
+	return True
 
 	
 def build_sentinel(self: DefenderBot, ct:Controller, reached_target: bool):
@@ -35,13 +35,16 @@ def build_sentinel(self: DefenderBot, ct:Controller, reached_target: bool):
 	if reached_target:
 		target_bitmask = self.get_bitmask(self.target)
 		if target_bitmask & self.walls_board:
-			if not alternative_pos:
+			if not self.task['data']['alternative_pos']:
 				for d in DIRECTIONS:
 					alt_pos = self.target.add(d)
 					if self.is_valid_position(alt_pos) and self.check_bit(self.walkable_board, alt_pos):
-						alternative_pos.append(alt_pos)
-
-			self.change_target(alternative_pos.pop())
+						self.task['data']['alternative_pos'].append(alt_pos)
+			if self.task['data']['alternative_pos']:
+				self.change_target(self.task['data']['alternative_pos'].pop())
+			else:
+				# Give up on this position
+				self.phase-=1
 			return True
 		if ct.get_action_cooldown() == 0:
 			self_pos = ct.get_position()
