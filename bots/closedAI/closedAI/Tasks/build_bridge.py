@@ -15,7 +15,7 @@ def generate_path(self: BuilderBot, ct:Controller, reached_target: bool):
 	#if this is the start of us building a bridge (i.e. first placement)
 	bridge_start = None
 	if not self.bridge_path:
-		bridge_start: Position = self.task['data']
+		bridge_start: Position = self.task['data']['start']
 	elif self.target:
 		
 		#if we are mid building the bridge and we had a collision
@@ -61,13 +61,15 @@ def generate_path(self: BuilderBot, ct:Controller, reached_target: bool):
 			return True
 		bridge_start = current_pos
 	
-	capacity_board = 0
-	for i in self.conveyor_lines:
-		if len(self.conveyor_lines[i]['harvesters'])<4 and self.conveyor_lines[i]['feeds_team']==ct.get_team():
-			capacity_board|=self.conveyor_lines[i]['bitboard']
-	capacity_board|=self.core_mask
-
-	goal = self.closest_in_board(capacity_board, bridge_start)
+	if not self.task['data']['to_feed']:
+		capacity_board = 0
+		for i in self.conveyor_lines:
+			if len(self.conveyor_lines[i]['harvesters'])<4 and self.conveyor_lines[i]['feeds_team']==ct.get_team():
+				capacity_board|=self.conveyor_lines[i]['bitboard']
+		capacity_board|=self.core_mask
+		goal = self.closest_in_board(capacity_board, bridge_start)
+	else:
+		goal = self.task['data']['to_feed']
 	self.compute_bridge_path(ct, bridge_start, goal)
 	#if there is no path from this start we just abandon this harvester
 	if not self.bridge_path:
@@ -239,7 +241,7 @@ def attack(self:BuilderBot, ct:Controller, reached_target:bool):
 
 
 def is_valid(self:BuilderBot,ct:Controller, task:TaskData)->bool:
-	return bool(self.check_bit(self.connected_region, task['data']))
+	return bool(self.check_bit(self.connected_region, task['data']['start']))
 
 phases = [generate_path, choose_bridge_type,attack]
 do_once = True

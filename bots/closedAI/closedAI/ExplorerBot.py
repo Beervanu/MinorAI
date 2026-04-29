@@ -11,6 +11,7 @@ class ExplorerBot(BuilderBot):
 			BuilderTask.ATTACK_ENEMY_CORE,
 			BuilderTask.CUTOFF_ENEMY_TURRET, 
 			BuilderTask.HEAL,
+			BuilderTask.REFINE_AXIONITE,
 			BuilderTask.CUTOFF_ENEMY_LINES, 
 			BuilderTask.FIND_ENEMY_CORE,
 			BuilderTask.BUILD_BRIDGE, 

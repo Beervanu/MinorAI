@@ -15,6 +15,7 @@ class BuilderBot(Bot):
 		
 		
 		super().__init__(ct, EntityType.BUILDER_BOT)
+		
 		self.protected_area = 0
 		self.core_pos = core_pos
 		for d in Direction:
@@ -120,6 +121,8 @@ class BuilderBot(Bot):
 			# TODO: right now identifier is always a position this is jank
 			# try and not stand on where another bot is trying to do something
 			if read.task_type in DO_ONCE_TASKS:
+				if read.task_type == BuilderTask.REFINE_AXIONITE:
+					self.built_foundry = True
 				pos_index = read.task_identifier
 				clear_out_pos = Position(pos_index % self.map_width, floor(pos_index/self.map_width))
 				if clear_out_pos != ct.get_position():
@@ -199,7 +202,7 @@ class BuilderBot(Bot):
 
 
 		neighbours = neighbour_bit_mask & (goal_bitmask | ~(self.get_full_lines_board(round)))
-		neighbours &= (self.walkable_board|(~self.seen_board))  & ~(self.axionite_ores_board | self.titanium_ores_board | self.defence_walls_board)
+		neighbours &= (self.walkable_board|(~self.seen_board)|self.conveyor_targets_board)  & ~(self.axionite_ores_board | self.titanium_ores_board | self.defence_walls_board)
 		neighbours &= self.connected_region
 		if ids:= self.conveyor_ids[pos]:
 			for id in ids:
@@ -209,7 +212,7 @@ class BuilderBot(Bot):
 							yield from self.conveyor_lines[id]['positions'][i+1:]
 							break
 				break
-			
+		yield None	
 		while neighbours:
 			(neighbours, nb) = self.pop_lsb(neighbours)
 			yield nb
@@ -285,20 +288,25 @@ class BuilderBot(Bot):
 					break
 
 				closed_set.add(current)
+				no_cost = True
 				for neighbour in neighbour_function(current):
-					
+					if neighbour is None:
+						no_cost=False
+						continue
+
 					# Uniform cost of 1 per step for now
 					# added a cost to build roads (we don't need to worry about this when generating a bridge path)
 					extra_cost = 0
 					if not bridge and not self.check_bit(self.team_buildings_board| self.enemy_buildings_board, neighbour):
 						extra_cost += 0.5
 					if bridge:
-						if self.check_bit(self.enemy_buildings_board, neighbour):
-							# add a cost if we need to build over enemy buildings
-							extra_cost +=1
-						#add a cost for building a bridge instead of a conveyor
-						if current.distance_squared(neighbour)>1:
-							extra_cost +=10
+						if not no_cost:
+							if self.check_bit(self.enemy_buildings_board, neighbour):
+								# add a cost if we need to build over enemy buildings
+								extra_cost +=1
+							#add a cost for building a bridge instead of a conveyor
+							if current.distance_squared(neighbour)>1:
+								extra_cost +=10
 					
 					# if self.check_bit(self.units_adjacent_board, neighbour):
 					# 	extra_cost+=1
@@ -417,7 +425,7 @@ class BuilderBot(Bot):
 		Runs A* and stores the result as noth a position list and a path bitboard.
 		"""
 		#check if there are actually any points we can pathfind to
-		if not self.check_bit(self.walkable_board|(~self.seen_board)|self.units_board, goal):
+		if not self.check_bit(self.walkable_board|(~self.seen_board)|self.units_board|self.team_buildings_board, goal):
 			print('start collided bridge', goal)
 			self.reset_path()
 			return False

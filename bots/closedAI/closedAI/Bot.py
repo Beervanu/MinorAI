@@ -1,7 +1,7 @@
 from cambc import Controller
 from .Markers import *
 from .Tasktypes import *
-from cambc import Position,EntityType,Environment, Team
+from cambc import Position,EntityType,Environment, Team, ResourceType
 from .Constants import *
 from .Tasks import DO_ONCE_TASKS, builder_tasks
 from .MapSymmetry import *
@@ -18,6 +18,7 @@ class ConveyorInfo(TypedDict):
 
 class Bot:
 	def __init__(self, ct: Controller, entity_type:EntityType):
+		self.built_foundry = False
 		self.started_axionite = False
 		self.num_feeding_core = 0
 		self.id = ct.get_current_round()
@@ -36,6 +37,7 @@ class Bot:
 		self.task_priority: dict[Task, int]
 		self.invalid_tasks: list[TaskData] = []
 		# Initialisation of bitboards for different map features
+		self.conveyor_targets_board = 0
 		self.seen_board = 0
 		self.seen_symmetry_boards = (0,0,0)
 		self.walls_board = 0
@@ -427,7 +429,7 @@ class Bot:
 					'feeds_team': None
 				})
 			if upstream_harvesters and self.entity_type == EntityType.BUILDER_BOT:
-				self.add_task(ct, BuilderTask.BUILD_BRIDGE, pos, False)
+				self.add_task(ct, BuilderTask.BUILD_BRIDGE, {'start':pos, 'to_feed':None}, False)
 			
 			
 			# then update id board
@@ -614,12 +616,14 @@ class Bot:
 			self.team_conveyors_board &= inverted_pos_bitmask
 			old_harvesters = self.harvesters_board
 			self.harvesters_board&= inverted_pos_bitmask
+			self.conveyor_targets_board&=inverted_pos_bitmask
 			building_id = ct.get_tile_building_id(pos)
 			if building_id:
 				etype = ct.get_entity_type(building_id)
 				team = ct.get_team(building_id)
 				is_team: bool = ct.get_team() == team
-				if etype in [EntityType.CORE]+TURRET_ENTITIES:
+				if etype in [EntityType.CORE, EntityType.SPLITTER, EntityType.FOUNDRY]+TURRET_ENTITIES:
+					self.conveyor_targets_board |= pos_bitmask
 					for p in self.conveyors_pointing_into[pos]:
 						ids = self.conveyor_ids[p]
 						for id in ids:
@@ -631,6 +635,10 @@ class Bot:
 								'feeds_team': team
 							})
 				if etype in CONVEYOR_ENTITIES:
+					if is_builder_bot and not self.built_foundry:
+						if self.check_bit(self.protected_area,pos) and ct.get_stored_resource(building_id)==ResourceType.RAW_AXIONITE:# type: ignore
+							self.add_task(ct, BuilderTask.REFINE_AXIONITE, {'ax_in':pos})
+							self.built_foundry= True
 					if etype==EntityType.BRIDGE:
 						points_to = ct.get_bridge_target(building_id)
 					else:
@@ -680,6 +688,8 @@ class Bot:
 							self.team_harvesters_board |= pos_bitmask
 						elif etype in CONVEYOR_ENTITIES:
 							self.team_conveyors_board |= pos_bitmask
+						elif etype == EntityType.FOUNDRY:
+							self.built_foundry = True
 					else:
 						self.enemy_buildings_board|= pos_bitmask
 						if etype in CONVEYOR_ENTITIES:
@@ -709,7 +719,7 @@ class Bot:
 				valid_pos.sort(key=lambda po: self.chebyshev(self.core_pos, po))
 				for pos in valid_pos:
 					if self.check_bit(self.walkable_board, pos) and not self.check_bit(self.axionite_ores_board|self.titanium_ores_board|self.defence_walls_board, pos): # type: ignore
-						self.add_task(ct,BuilderTask.BUILD_BRIDGE, (pos), False)
+						self.add_task(ct,BuilderTask.BUILD_BRIDGE, {'start':pos, 'to_feed':None}, False)
 						break
 		print(f'Updating buildings took {ct.get_cpu_time_elapsed()-t}μs')
 		t=ct.get_cpu_time_elapsed()
@@ -794,8 +804,10 @@ class Bot:
 	def get_task_identifier(self, task:Task, data:Any):
 		identifier = 0
 		match task:
-			case BuilderTask.FOUND_ORE | BuilderTask.BUILD_BRIDGE | BuilderTask.PLACE_SENTINEL | BuilderTask.CUTOFF_ENEMY_TURRET:
+			case BuilderTask.FOUND_ORE | BuilderTask.PLACE_SENTINEL | BuilderTask.CUTOFF_ENEMY_TURRET:
 				identifier = data.y*self.map_width + data.x
+			case BuilderTask.BUILD_BRIDGE:
+				identifier = data['start'].y*self.map_width + data['start'].x
 
 		return identifier
 
@@ -804,6 +816,8 @@ class Bot:
 
 		identifier = self.get_task_identifier(task, data)
 		taskdata:TaskData = {"type":task, "data":data, "identifier": identifier, "interruptable": interruptable, "uid":self.task_num, "timeout":0}
+		if task == BuilderTask.REFINE_AXIONITE and self.built_foundry:
+			return False
 		if not builder_tasks[task]['is_valid'](self,ct,taskdata):
 			return False
 		round = ct.get_current_round()
