@@ -18,6 +18,8 @@ class ConveyorInfo(TypedDict):
 
 class Bot:
 	def __init__(self, ct: Controller, entity_type:EntityType):
+		self.started_axionite = False
+		self.num_feeding_core = 0
 		self.id = ct.get_current_round()
 		self.core_pos = Position(0,0)
 		self.entity_type = entity_type
@@ -572,10 +574,11 @@ class Bot:
 			elif env == Environment.ORE_TITANIUM:
 				self.titanium_ores_board, self.titanium_ores_symmetry_boards = self.set_symmetry_bit(self.titanium_ores_board, self.titanium_ores_symmetry_boards,pos)
 				if is_builder_bot:
-					self.add_task(ct,BuilderTask.FOUND_TI_ORE, pos, True)
+					self.add_task(ct,BuilderTask.FOUND_ORE, pos, True)
 			elif env == Environment.ORE_AXIONITE:
 				self.axionite_ores_board, self.axionite_ores_symmetry_boards = self.set_symmetry_bit(self.axionite_ores_board,self.axionite_ores_symmetry_boards,pos)
-			
+				if is_builder_bot and self.started_axionite:
+					self.add_task(ct, BuilderTask.FOUND_ORE, pos)
 			if env == Environment.ORE_AXIONITE or env == Environment.ORE_TITANIUM:
 				self.ore_adjacent_board |= self.get_cardinal_bitmask(current_pos)
 			self.seen_board,self.seen_symmetry_boards = self.set_symmetry_bit(self.seen_board,self.seen_symmetry_boards, pos)
@@ -711,21 +714,32 @@ class Bot:
 		t=ct.get_cpu_time_elapsed()
 		# we want to cutoff enemy lines that feed enemy buildings
 		if conveyors_added and is_builder_bot:
+			
+			self.num_feeding_core = 0
 			found_ids:set[int] = set()
 			for id in self.conveyor_lines:
 				if id in found_ids:
 					continue
 				found_ids.add(id)
 				conveyor_info = self.conveyor_lines[id]
-				if conveyor_info['feeds_team'] != self.team and conveyor_info['harvesters']:
-					#get ids of last position, then cutoff all of those lines simultaneously
-					cutoff_line_ids = self.conveyor_ids[conveyor_info['positions'][-1]]
-					found_ids.update(cutoff_line_ids)
-					bitb = conveyor_info['bitboard']
-					for _id in cutoff_line_ids:
-						bitb&= self.conveyor_lines[_id]['bitboard']
-					self.add_task(ct, BuilderTask.CUTOFF_ENEMY_LINES, self.closest_in_board(bitb, ct.get_position()), True)
-
+				if conveyor_info['feeds_team'] != self.team:
+					if conveyor_info['harvesters']:
+						#get ids of last position, then cutoff all of those lines simultaneously
+						cutoff_line_ids = self.conveyor_ids[conveyor_info['positions'][-1]]
+						found_ids.update(cutoff_line_ids)
+						bitb = conveyor_info['bitboard']
+						for _id in cutoff_line_ids:
+							bitb&= self.conveyor_lines[_id]['bitboard']
+						self.add_task(ct, BuilderTask.CUTOFF_ENEMY_LINES, self.closest_in_board(bitb, ct.get_position()), True)
+				else:
+					if conveyor_info['feeds']==EntityType.CORE:
+						self.num_feeding_core += len(conveyor_info['harvesters'])
+		if self.num_feeding_core>=4 and not self.started_axionite:
+			self.started_axionite = True
+			ax_ores = self.axionite_ores_board&self.connected_region
+			while(ax_ores):
+				ax_ores, pos = self.pop_lsb(ax_ores)
+				self.add_task(ct, BuilderTask.FOUND_ORE, pos)
 
 		print(f'Calculating enemy line cutoff points took {ct.get_cpu_time_elapsed()-t}μs')
 		t=ct.get_cpu_time_elapsed()
@@ -779,7 +793,7 @@ class Bot:
 	def get_task_identifier(self, task:Task, data:Any):
 		identifier = 0
 		match task:
-			case BuilderTask.FOUND_AX_ORE | BuilderTask.FOUND_TI_ORE | BuilderTask.BUILD_BRIDGE | BuilderTask.PLACE_SENTINEL | BuilderTask.CUTOFF_ENEMY_TURRET:
+			case BuilderTask.FOUND_ORE | BuilderTask.BUILD_BRIDGE | BuilderTask.PLACE_SENTINEL | BuilderTask.CUTOFF_ENEMY_TURRET:
 				identifier = data.y*self.map_width + data.x
 
 		return identifier

@@ -13,12 +13,10 @@ class DefenderBot(BuilderBot):
 			BuilderTask.CUTOFF_ENEMY_TURRET, 
 			BuilderTask.HEAL,
 			BuilderTask.CUTOFF_ENEMY_LINES,
-			BuilderTask.FOUND_CORE, 
 			BuilderTask.FIND_ENEMY_CORE,
 			BuilderTask.BUILD_BRIDGE, 
 			BuilderTask.PLACE_SENTINEL, 
-			BuilderTask.FOUND_AX_ORE, 
-			BuilderTask.FOUND_TI_ORE,
+			BuilderTask.FOUND_ORE,
 			BuilderTask.FIND_ORE
 			]
 		#generate lookup table for task priorities      

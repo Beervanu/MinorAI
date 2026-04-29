@@ -7,7 +7,7 @@ from ..helper_functions import eprint
 from ..Constants import CARDINAL_DIRECTIONS, CONVEYOR_ENTITIES
 from ..Tasktypes import BuilderTask, TaskData
 from cambc import Controller, GameConstants, EntityType
-task_type = BuilderTask.FOUND_TI_ORE # some BuilderTask
+task_type = BuilderTask.FOUND_ORE # some BuilderTask
 
 def set_target(self: BuilderBot, ct:Controller, reached_target: bool):
 	self.change_target(self.task['data'], 2)

@@ -83,7 +83,7 @@ class BuilderBot(Bot):
 	def get_task_secondary_priority(self, ct: Controller, task: TaskData):
 		prio = float('inf')
 		match task['type']:
-			case BuilderTask.FOUND_TI_ORE | BuilderTask.FOUND_AX_ORE:
+			case BuilderTask.FOUND_ORE:
 				prio = ct.get_position().distance_squared(task['data'])
 			case BuilderTask.PLACE_SENTINEL:
 				if self.enemy_core_pos:
