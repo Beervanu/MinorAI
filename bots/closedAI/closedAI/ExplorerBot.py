@@ -18,7 +18,9 @@ class ExplorerBot(BuilderBot):
 			BuilderTask.PLACE_SENTINEL, 
 			BuilderTask.FOUND_AX_ORE, 
 			BuilderTask.FOUND_TI_ORE, 
-			BuilderTask.FIND_ORE
+			BuilderTask.FIND_ORE,
+			BuilderTask.BUILD_CORE_DEFENCE,
+			BuilderTask.GET_RID_OF_INTRUDERS
 		]
 		#generate lookup table for task priorities      
 		self.task_priority = {task: i for i, task in enumerate(priority_list)}

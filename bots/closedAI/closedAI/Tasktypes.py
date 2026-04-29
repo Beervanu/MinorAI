@@ -14,6 +14,7 @@ class BuilderTask(IntEnum):
 	HEAL = 9
 	CUTOFF_ENEMY_LINES=10
 	BUILD_CORE_DEFENCE = 11
+	GET_RID_OF_INTRUDERS = 12
 
 
 type Task = BuilderTask 

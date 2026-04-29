@@ -55,8 +55,13 @@ def build_wall(self: DefenderBot, ct: Controller, reached_target: bool):
 			if self.defence_walls_board & self.units_board:
 				return False
 			# All walls built and launchers handled - task complete
+			self.add_task(ct, BuilderTask.GET_RID_OF_INTRUDERS, data=None) 
 			self.task_complete(ct)
 			return True
+		elif not self.check_bit(self.connected_region, target_pos):
+			self.phase = phases.index(pick_wall_target)
+			return True
+		
 		curr_pos = ct.get_position()
 		new_target_dist = curr_pos.distance_squared(target_pos)
 		if new_target_dist<curr_pos.distance_squared(self.target):

@@ -9,6 +9,7 @@ class DefenderBot(BuilderBot):
 		#most to least priority
 		priority_list = [
 			BuilderTask.BUILD_CORE_DEFENCE, 
+			BuilderTask.GET_RID_OF_INTRUDERS,
 			BuilderTask.ATTACK_ENEMY_CORE, 
 			BuilderTask.CUTOFF_ENEMY_TURRET, 
 			BuilderTask.HEAL,
@@ -27,8 +28,19 @@ class DefenderBot(BuilderBot):
 		self.launcher_gaps_board: int = 0          # tiles that should be left empty (in wall ring)
 		self.launcher_positions_board: int = 0     # tiles where launchers should be built
 		self.launcher_pocket_board: int = 0        # all tiles around launchers (must stay empty)
-								
 		super().__init__(ct, core_pos, move_dir)
+		offsets = [
+				(2, 3, Direction.EAST), 
+				(2, -3, Direction.EAST), 
+				(-2, 3, Direction.WEST), 
+				(-2, -3, Direction.WEST)
+			]
+		self.sentinel_defence_positions: list[tuple[Position, Direction]] = []
+		for dx, dy, direction in offsets:
+			pos_x, pos_y = core_pos.x + dx, core_pos.y + dy
+			if 0 <= pos_x < self.map_width and 0 <= pos_y < self.map_height:
+				self.sentinel_defence_positions.append((Position(pos_x, pos_y), direction))
+
 		self.defence_walls_board: int = 0
 		self.defence_conveyors_board: int = 0
 		self.marker_info = LauncherMarkerData()

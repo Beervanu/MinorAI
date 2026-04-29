@@ -29,7 +29,7 @@ class Bot:
 		# Cache map dimensions globally for this unit
 		self.map_width = ct.get_map_width()
 		self.map_height = ct.get_map_height()
-		self.task: TaskData = None
+		self.task: TaskData = None 
 		self.task_backlog: list[TaskData] = []
 		self.task_priority: dict[Task, int]
 		self.invalid_tasks: list[TaskData] = []
