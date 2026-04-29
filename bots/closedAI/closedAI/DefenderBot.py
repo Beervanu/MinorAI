@@ -30,10 +30,10 @@ class DefenderBot(BuilderBot):
 		self.launcher_pocket_board: int = 0        # all tiles around launchers (must stay empty)
 		super().__init__(ct, core_pos, move_dir)
 		offsets = [
-				(2, 3, Direction.EAST), 
-				(2, -3, Direction.EAST), 
-				(-2, 3, Direction.WEST), 
-				(-2, -3, Direction.WEST)
+				(-3, 1, Direction.NORTH), 
+				(-3, 3, Direction.EAST), 
+				(3, -1, Direction.SOUTH), 
+				(3, -3, Direction.WEST)
 			]
 		self.sentinel_defence_positions: list[tuple[Position, Direction]] = []
 		for dx, dy, direction in offsets:

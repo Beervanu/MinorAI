@@ -14,6 +14,7 @@ sent_direction = Direction.WEST
 alternative_pos = []
 
 def next_unbuilt_sentinel(self: DefenderBot, ct:Controller, reached_target: bool):
+	eprint('Finding next sentinel position')
 	global sent_direction
 	if self.sentinel_defence_positions:
 		next_target, sent_direction = self.sentinel_defence_positions.pop()
@@ -81,11 +82,6 @@ def build_sentinel(self: DefenderBot, ct:Controller, reached_target: bool):
 					ct.build_sentinel(self.target, sent_direction)
 					self.phase-=1
 					return True
-		
-	
-def connect_sentinel(self:DefenderBot, ct:Controller):
-	# Connect sentinel to nearby infrastructure
-	pass
 
 #is called before we switch to this task, and can be used to cull the task if it ever becomes invalid
 def is_valid(self: DefenderBot,ct:Controller, task:TaskData)->bool:

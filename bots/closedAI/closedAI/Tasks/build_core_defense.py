@@ -34,12 +34,12 @@ def next_unbuilt_defence_tile(self: DefenderBot, ct: Controller, template_board:
 def pick_wall_target(self: DefenderBot, ct: Controller, reached_target: bool):
 	"""Find the nearest unbuilt wall tile and target it."""
 	target_pos = next_unbuilt_defence_tile(self, ct, self.defence_walls_board)
-
 	if target_pos is None:
 		#if we are blocked by a unit
 		if self.defence_walls_board & self.units_board:
 			return False
 		# All walls built and launchers handled - task complete
+		self.add_task(ct, BuilderTask.GET_RID_OF_INTRUDERS, data=None)
 		self.task_complete(ct)
 		return True
 
@@ -56,6 +56,7 @@ def build_wall(self: DefenderBot, ct: Controller, reached_target: bool):
 				return False
 			# All walls built and launchers handled - task complete
 			self.add_task(ct, BuilderTask.GET_RID_OF_INTRUDERS, data=None) 
+			eprint('Finished building walls, moving on to intruders')
 			self.task_complete(ct)
 			return True
 		elif not self.check_bit(self.connected_region, target_pos):
